@@ -46,8 +46,8 @@ describe('App', () => {
     expect(screen.getByText(/no messages/i)).toBeInTheDocument()
   })
 
-  it('should show a "New Session" button', () => {
+  it('should show a new session button', () => {
     render(<App />)
-    expect(screen.getByText(/new session/i)).toBeInTheDocument()
+    expect(screen.getByTitle('New session')).toBeInTheDocument()
   })
 })

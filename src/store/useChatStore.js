@@ -35,11 +35,13 @@ function convertToolCalls(toolCalls) {
     status: 'start',
     exec_snippet: getToolSnippet(tc),
     tool_call_id: tc.id || '',
+    // Preserve arguments/args for expandable details
+    args: tc.arguments || tc.args || '',
   }))
 }
 
 /**
- * Normalize messages from the server (e.g. from session_switch).
+ * Normalize messages from the server (e.g. from get_session).
  */
 function normalizeMessages(rawMessages) {
   const result = []
@@ -74,7 +76,14 @@ function normalizeMessages(rawMessages) {
 
         if (existingIdx >= 0) {
           const updated = [...last.toolCalls]
-          updated[existingIdx] = { ...updated[existingIdx], status: m.status || 'ok' }
+          updated[existingIdx] = {
+            ...updated[existingIdx],
+            status: m.status || 'ok',
+            // Preserve result/output/data from tool response for expandable details
+            data: m.data || m.output || m.result || m.content,
+            output: m.output || m.content || '',
+            content: m.content || '',
+          }
           last.toolCalls = updated
         } else {
           last.toolCalls = [...(last.toolCalls || []), toolCall]
@@ -85,7 +94,12 @@ function normalizeMessages(rawMessages) {
           id: genId(),
           role: 'assistant',
           content: toolMarker(0),
-          toolCalls: [toolCall],
+          toolCalls: [{
+            ...toolCall,
+            data: m.data || m.output || m.result || m.content,
+            output: m.output || m.content || '',
+            content: m.content || '',
+          }],
           timestamp: m.timestamp || Date.now(),
         })
       }
@@ -133,12 +147,16 @@ function normalizeMessages(rawMessages) {
  * Sort sessions by updated_at descending (most recent first).
  * Sessions without updated_at are placed at the end.
  */
+/**
+ * Sort sessions: newest updated_at first, sessions without updated_at
+ * (newly created) at the very top.
+ */
 function sortSessionsByUpdated(sessions) {
   if (!sessions) return sessions
   return [...sessions].sort((a, b) => {
     if (!a.updated_at && !b.updated_at) return 0
-    if (!a.updated_at) return 1
-    if (!b.updated_at) return -1
+    if (!a.updated_at) return -1
+    if (!b.updated_at) return 1
     return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
   })
 }
@@ -205,6 +223,23 @@ function saveConfig(config) {
   }
 }
 
+function loadPrompts() {
+  try {
+    const raw = localStorage.getItem('hakka_prompts')
+    return raw ? JSON.parse(raw) : []
+  } catch {
+    return []
+  }
+}
+
+function savePrompts(prompts) {
+  try {
+    localStorage.setItem('hakka_prompts', JSON.stringify(prompts))
+  } catch {
+    // localStorage may be unavailable
+  }
+}
+
 /**
  * Chat store — manages messages per session, connection state, streaming,
  * session, session list, and config.
@@ -215,6 +250,7 @@ export const useChatStore = create((set, get) => ({
   sessionMessages: {},
   sessionStatus: {},
   sessionCwds: {},
+  sessionEstimatedTokens: {},
   sessionUnread: {},
   sessionId: null,
   connectionStatus: 'disconnected',
@@ -225,6 +261,11 @@ export const useChatStore = create((set, get) => ({
   sessions: [],
   cwd: null,
   tools: [],
+  models: [],
+  /** Prompt templates persisted to localStorage. */
+  prompts: loadPrompts(),
+  /** When set, InputBar picks this up as text to paste. */
+  draftText: null,
 
   /** Application config (persisted to localStorage). */
   config: loadConfig(),
@@ -349,6 +390,21 @@ export const useChatStore = create((set, get) => ({
     })
   },
 
+  appendAssistantMessage: (content, sessionId) => {
+    const msg = {
+      id: genId(),
+      role: 'assistant',
+      content,
+      toolCalls: [],
+      timestamp: Date.now(),
+    }
+    const sid = sessionId || get().sessionId
+    set((state) => ({
+      ...setSessionMsgs(state, sid, [...getSessionMsgs(state, sid), msg]),
+      isCancelling: false,
+    }))
+  },
+
   addToolEvent: (event, sessionId) => {
     set((state) => {
       const msgs = [...getSessionMsgs(state, sessionId)]
@@ -458,7 +514,7 @@ export const useChatStore = create((set, get) => ({
           })
         }
         break
-      case 'session_switch':
+      case 'get_session':
         if (data.session) {
           set((state) => {
             const oldId = state.sessionId
@@ -469,6 +525,10 @@ export const useChatStore = create((set, get) => ({
             const newSessionCwds = { ...state.sessionCwds }
             if (oldId) {
               newSessionCwds[oldId] = state.cwd
+            }
+            const newSessionTokens = { ...state.sessionEstimatedTokens }
+            if (oldId && state.sessionEstimatedTokens[state.sessionId] !== undefined) {
+              newSessionTokens[oldId] = state.sessionEstimatedTokens[state.sessionId]
             }
             const targetId = data.session.id
             const cached = newSessionMessages[targetId]
@@ -484,6 +544,7 @@ export const useChatStore = create((set, get) => ({
               messages: targetMessages,
               sessionMessages: newSessionMessages,
               sessionCwds: newSessionCwds,
+              sessionEstimatedTokens: newSessionTokens,
               sessions: newSessions,
               cwd: targetCwd,
               isStreaming: state.sessionStatus[targetId] === 'streaming',
@@ -501,6 +562,8 @@ export const useChatStore = create((set, get) => ({
             delete newSessionStatus[data.deleted]
             const newSessionCwds = { ...state.sessionCwds }
             delete newSessionCwds[data.deleted]
+            const newSessionTokens = { ...state.sessionEstimatedTokens }
+            delete newSessionTokens[data.deleted]
             const newUnread = { ...state.sessionUnread }
             delete newUnread[data.deleted]
             return {
@@ -510,6 +573,7 @@ export const useChatStore = create((set, get) => ({
               sessionMessages: newSessionMessages,
               sessionStatus: newSessionStatus,
               sessionCwds: newSessionCwds,
+              sessionEstimatedTokens: newSessionTokens,
               sessionUnread: newUnread,
             }
           })
@@ -540,6 +604,24 @@ export const useChatStore = create((set, get) => ({
           set({ tools: data.tools.map((t) => ({ ...t, enabled: !!t.enabled })) })
         }
         break
+      case 'tool_allow':
+        if (Array.isArray(data.allowed)) {
+          set((state) => ({
+            tools: state.tools.map((t) =>
+              data.allowed.includes(t.name) ? { ...t, enabled: true } : t
+            ),
+          }))
+        }
+        break
+      case 'tool_deny':
+        if (Array.isArray(data.denied)) {
+          set((state) => ({
+            tools: state.tools.map((t) =>
+              data.denied.includes(t.name) ? { ...t, enabled: false } : t
+            ),
+          }))
+        }
+        break
       case 'tool_enable':
         if (Array.isArray(data.enabled)) {
           set((state) => ({
@@ -556,6 +638,26 @@ export const useChatStore = create((set, get) => ({
               data.disabled.includes(t.name) ? { ...t, enabled: false } : t
             ),
           }))
+        }
+        break
+      case 'model_list':
+        if (Array.isArray(data.models)) {
+          set({ models: data.models })
+        }
+        break
+      case 'model_switch':
+        if (data.model) {
+          set((state) => ({
+            models: (state.models || []).map((m) => ({
+              ...m,
+              current: (m.name || m.model) === data.model,
+            })),
+          }))
+        }
+        break
+      case 'cwd_set':
+        if (data.cwd) {
+          set({ cwd: data.cwd })
         }
         break
     }
@@ -575,6 +677,15 @@ export const useChatStore = create((set, get) => ({
         : state.sessionCwds,
     }))
   },
+  /** Set estimated context tokens for a session. */
+  setEstimatedContextTokens: (count, sessionId) => {
+    set((state) => ({
+      sessionEstimatedTokens: {
+        ...state.sessionEstimatedTokens,
+        [sessionId || state.sessionId]: count,
+      },
+    }))
+  },
   clearMessages: () => set({ messages: [] }),
   /** Set isStreaming without creating a message (for immediate Cancel button). */
   setStreaming: (val) => set({ isStreaming: val }),
@@ -589,4 +700,43 @@ export const useChatStore = create((set, get) => ({
       ),
     }))
   },
+
+  // --- Prompt Templates ---
+
+  /** Add a new prompt template. */
+  addPrompt: (prompt) => {
+    const newPrompt = { ...prompt, id: prompt.id || genId() }
+    set((state) => {
+      const updated = [...state.prompts, newPrompt]
+      savePrompts(updated)
+      return { prompts: updated }
+    })
+    return newPrompt
+  },
+
+  /** Update an existing prompt template. */
+  updatePrompt: (id, changes) => {
+    set((state) => {
+      const updated = state.prompts.map((p) =>
+        p.id === id ? { ...p, ...changes } : p
+      )
+      savePrompts(updated)
+      return { prompts: updated }
+    })
+  },
+
+  /** Delete a prompt template by id. */
+  deletePrompt: (id) => {
+    set((state) => {
+      const updated = state.prompts.filter((p) => p.id !== id)
+      savePrompts(updated)
+      return { prompts: updated }
+    })
+  },
+
+  /** Set draft text — InputBar will pick it up and paste it. */
+  setDraftText: (text) => set({ draftText: text }),
+
+  /** Clear draft text (called by InputBar after consuming it). */
+  clearDraftText: () => set({ draftText: null }),
 }))

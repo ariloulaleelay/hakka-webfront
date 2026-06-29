@@ -30,7 +30,7 @@ describe('genId uniqueness', () => {
     store.startAssistantMessage()
     store.appendDelta('one')
 
-    // Reset messages to simulate session_switch reload
+    // Reset messages to simulate get_session reload
     useChatStore.setState({ messages: [] })
 
     // Simulate second mount batch (StrictMode remount)
@@ -56,7 +56,7 @@ describe('genId uniqueness', () => {
     useChatStore.setState({ messages: [] })
     const store = useChatStore.getState()
 
-    // Simulate loading messages from server (session_switch)
+    // Simulate loading messages from server (get_session)
     // Server messages without IDs get UUIDs
     store.setMessages([
       { role: 'user', content: 'Hello!' },
@@ -75,12 +75,12 @@ describe('genId uniqueness', () => {
     expect(ids.length).toBe(uniqueIds.size)
   })
 
-  it('handles concurrent session_switch and local message creation', () => {
+  it('handles concurrent get_session and local message creation', () => {
     useChatStore.setState({ messages: [] })
     const store = useChatStore.getState()
 
     // First, load messages from server
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-1' },
       messages: [
         { role: 'user', content: 'Hello' },

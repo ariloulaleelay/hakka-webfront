@@ -39,10 +39,10 @@ describe('Sidebar', () => {
     expect(screen.getByText('xyz-789')).toBeInTheDocument()
   })
 
-  it('should show a "New Session" button', () => {
+  it('should show a new session button', () => {
     const onNew = vi.fn()
     render(<Sidebar onNewSession={onNew} />)
-    fireEvent.click(screen.getByText(/new session/i))
+    fireEvent.click(screen.getByTitle('New session'))
     expect(onNew).toHaveBeenCalledOnce()
   })
 
@@ -87,7 +87,7 @@ describe('Sidebar', () => {
     expect(dot.style.backgroundColor).toBe('rgb(239, 68, 68)') // red
   })
 
-  it('should show delete button on hover for non-current sessions', () => {
+  it('should show delete button for sessions', () => {
     useChatStore.setState({
       sessionId: 'aaa',
       sessions: [
@@ -167,5 +167,62 @@ describe('Sidebar', () => {
 
     expect(onDelete).not.toHaveBeenCalled()
     expect(screen.queryByText(/are you sure/i)).not.toBeInTheDocument()
+  })
+
+  // --- Active session deletion ---
+
+  it('should show delete button for the active session', () => {
+    useChatStore.setState({
+      sessionId: 'aaa',
+      sessions: [
+        { id: 'aaa', shortId: 'aaa', name: 'Active Session' },
+        { id: 'bbb', shortId: 'bbb', name: 'Other Session' },
+      ],
+    })
+    render(<Sidebar />)
+
+    // The active session row should have a delete button
+    const activeRow = screen.getByText('Active Session').closest('.sidebar__session')
+    expect(activeRow).toBeInTheDocument()
+    const deleteBtn = activeRow.querySelector('.sidebar__session-delete')
+    expect(deleteBtn).toBeInTheDocument()
+  })
+
+  it('should show confirmation dialog when deleting active session', () => {
+    useChatStore.setState({
+      sessionId: 'aaa',
+      sessions: [
+        { id: 'aaa', shortId: 'aaa', name: 'Active Session' },
+        { id: 'bbb', shortId: 'bbb', name: 'Other' },
+      ],
+    })
+    const onDelete = vi.fn()
+    render(<Sidebar onDeleteSession={onDelete} />)
+
+    const activeRow = screen.getByText('Active Session').closest('.sidebar__session')
+    fireEvent.click(activeRow.querySelector('.sidebar__session-delete'))
+
+    // Confirmation dialog should appear
+    expect(screen.getByText(/are you sure/i)).toBeInTheDocument()
+  })
+
+  it('should call onDeleteSession with active session id when confirmed', () => {
+    useChatStore.setState({
+      sessionId: 'aaa',
+      sessions: [
+        { id: 'aaa', shortId: 'aaa', name: 'Active Session' },
+        { id: 'bbb', shortId: 'bbb', name: 'Other' },
+      ],
+    })
+    const onDelete = vi.fn()
+    render(<Sidebar onDeleteSession={onDelete} />)
+
+    const activeRow = screen.getByText('Active Session').closest('.sidebar__session')
+    fireEvent.click(activeRow.querySelector('.sidebar__session-delete'))
+
+    // Confirm the deletion
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
+
+    expect(onDelete).toHaveBeenCalledWith('aaa')
   })
 })

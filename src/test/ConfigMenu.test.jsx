@@ -92,7 +92,7 @@ describe('ConfigMenu', () => {
     expect(onExecute).toHaveBeenCalledWith('tool_list', {})
   })
 
-  it('should call onExecute for tool_enable/tool_disable on toggle', () => {
+  it('should call onExecute for tool_allow/tool_deny on toggle', () => {
     useChatStore.setState({
       config: { wsUrl: 'ws://test:8765/ws', theme: 'dark' },
       tools: [
@@ -104,6 +104,6 @@ describe('ConfigMenu', () => {
 
     const toggleBtn = screen.getByTitle('Disable')
     fireEvent.click(toggleBtn)
-    expect(onExecute).toHaveBeenCalledWith('tool_disable', { name: 'read_file' })
+    expect(onExecute).toHaveBeenCalledWith('tool_deny', { name: 'read_file' })
   })
 })

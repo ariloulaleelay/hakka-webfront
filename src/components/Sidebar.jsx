@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react'
 import { useChatStore } from '../store/useChatStore'
 import { ConfigMenu } from './ConfigMenu'
+import { PromptDialog } from './PromptDialog'
 
 function ConfirmDialog({ sessionName, onConfirm, onCancel }) {
   return (
@@ -26,8 +27,7 @@ function ConfirmDialog({ sessionName, onConfirm, onCancel }) {
 }
 
 /**
- * Left sidebar showing all sessions in a single list.
- * The currently active session is highlighted.
+ * Left sidebar showing sessions and prompt templates.
  */
 export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExecute }) {
   const sessionId = useChatStore((s) => s.sessionId)
@@ -35,8 +35,16 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
   const sessionStatus = useChatStore((s) => s.sessionStatus)
   const sessionUnread = useChatStore((s) => s.sessionUnread)
   const connectionStatus = useChatStore((s) => s.connectionStatus)
+  const prompts = useChatStore((s) => s.prompts)
+  const setDraftText = useChatStore((s) => s.setDraftText)
+  const addPrompt = useChatStore((s) => s.addPrompt)
+  const updatePrompt = useChatStore((s) => s.updatePrompt)
+  const deletePrompt = useChatStore((s) => s.deletePrompt)
+
   const [pendingDelete, setPendingDelete] = useState(null)
   const [showConfig, setShowConfig] = useState(false)
+  const [showPromptDialog, setShowPromptDialog] = useState(false)
+  const [editingPrompt, setEditingPrompt] = useState(null)
 
   const STATUS_COLORS = {
     connected: '#22c55e',
@@ -66,6 +74,37 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
     }
   }, [pendingDelete, onDeleteSession])
 
+  const handlePromptClick = useCallback((p) => {
+    setDraftText(p.content)
+  }, [setDraftText])
+
+  const handlePromptSave = useCallback((data) => {
+    if (editingPrompt) {
+      updatePrompt(editingPrompt.id, data)
+    } else {
+      addPrompt(data)
+    }
+    setEditingPrompt(null)
+    setShowPromptDialog(false)
+  }, [editingPrompt, updatePrompt, addPrompt])
+
+  const handlePromptDelete = useCallback((id) => {
+    deletePrompt(id)
+    setEditingPrompt(null)
+    setShowPromptDialog(false)
+  }, [deletePrompt])
+
+  const handleNewPrompt = useCallback(() => {
+    setEditingPrompt(null)
+    setShowPromptDialog(true)
+  }, [])
+
+  const handleEditPrompt = useCallback((p, e) => {
+    e.stopPropagation()
+    setEditingPrompt(p)
+    setShowPromptDialog(true)
+  }, [])
+
   return (
     <aside className="sidebar">
       <div className="sidebar__header">
@@ -83,8 +122,18 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
         </button>
       </div>
 
+      {/* Sessions section */}
       <div className="sidebar__section">
-        <div className="sidebar__section-title">Sessions</div>
+        <div className="sidebar__section-title">
+          Sessions
+          <button
+            className="sidebar__section-add"
+            onClick={onNewSession}
+            title="New session"
+          >
+            +
+          </button>
+        </div>
         {sessions.length === 0 && (
           <div className="sidebar__empty">No sessions</div>
         )}
@@ -102,28 +151,56 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
               <span className="sidebar__session-name">
                 {getSessionName(s)}
               </span>
-              {!isActive && (
-                <button
-                  className="sidebar__session-delete"
-                  title="Delete session"
-                  onClick={(e) => {
-                    e.stopPropagation()
-                    setPendingDelete(s.id)
-                  }}
-                >
-                  ✕
-                </button>
-              )}
+              <button
+                className="sidebar__session-delete"
+                title="Delete session"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  setPendingDelete(s.id)
+                }}
+              >
+                ✕
+              </button>
             </div>
           )
         })}
       </div>
 
-      <div className="sidebar__footer">
-        <button className="sidebar__new-btn" onClick={() => onNewSession?.()}>
-          + New Session
-        </button>
+      {/* Prompts section */}
+      <div className="sidebar__section">
+        <div className="sidebar__section-title">
+          Prompts
+          <button
+            className="sidebar__section-add"
+            onClick={handleNewPrompt}
+            title="New prompt"
+          >
+            +
+          </button>
+        </div>
+        {prompts.length === 0 && (
+          <div className="sidebar__empty">No prompts</div>
+        )}
+        {prompts.map((p) => (
+          <div
+            key={p.id}
+            className="sidebar__prompt"
+            onClick={() => handlePromptClick(p)}
+            title={p.content}
+          >
+            <span className="sidebar__prompt-name">{p.name}</span>
+            <button
+              className="sidebar__prompt-edit"
+              title="Edit prompt"
+              onClick={(e) => handleEditPrompt(p, e)}
+            >
+              ✎
+            </button>
+          </div>
+        ))}
       </div>
+
+
 
       {pendingDelete && (
         <ConfirmDialog
@@ -135,6 +212,15 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
 
       {showConfig && (
         <ConfigMenu onClose={() => setShowConfig(false)} onExecute={onExecute} />
+      )}
+
+      {showPromptDialog && (
+        <PromptDialog
+          prompt={editingPrompt}
+          onSave={handlePromptSave}
+          onDelete={handlePromptDelete}
+          onClose={() => { setShowPromptDialog(false); setEditingPrompt(null) }}
+        />
       )}
     </aside>
   )

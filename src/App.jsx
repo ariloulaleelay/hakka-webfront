@@ -3,7 +3,8 @@ import { ChatArea } from './components/ChatArea'
 import { InputBar } from './components/InputBar'
 import { Sidebar } from './components/Sidebar'
 import { CwdBar } from './components/CwdBar'
-import { useWebSocket } from './hooks/useWebSocket'
+import { TokensBar } from './components/TokensBar'
+import { useWebSocket, parseSlashCommand } from './hooks/useWebSocket'
 import { useChatStore } from './store/useChatStore'
 import './App.css'
 
@@ -28,9 +29,11 @@ function App() {
 
   const handleSend = useCallback(
     (text) => {
+      // Intercept slash commands — parse locally, never send to LLM
+      if (parseSlashCommand(text, execute)) return
       send(sessionId, text, true)
     },
-    [send, sessionId]
+    [send, sessionId, execute]
   )
 
   const handleCancel = useCallback(() => {
@@ -43,7 +46,7 @@ function App() {
 
   const handleSwitchSession = useCallback(
     (id) => {
-      execute('session_switch', { id })
+      execute('get_session', { id })
     },
     [execute]
   )
@@ -67,6 +70,7 @@ function App() {
       <div className="app__main-area">
         <header className="app__header">
           <CwdBar />
+          <TokensBar />
         </header>
 
         {error && (

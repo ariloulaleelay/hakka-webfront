@@ -10,6 +10,7 @@ This is a standalone React + Vite application that connects to a running Hakka i
 - **Tool Observability** — see tool calls inline with real-time status (start/ok/err)
 - **Multi-Session** — create, switch, and delete sessions; parallel streaming across sessions
 - **Session History** — load and view past conversations with normalized display
+- **Slash Commands** — `/help`, `/tool list`, `/model switch`, and more are parsed client-side, never sent to the LLM
 - **Auto-Reconnect** — exponential backoff (1s–16s) with status indicator
 - **Editable CWD** — per-session working directory persistence
 - **Markdown Rendering** — GFM tables, syntax-highlighted code blocks, inline tool calls
@@ -75,7 +76,8 @@ src/
     ├── CwdBar.test.jsx         — CWD bar tests
     ├── MarkdownContent.test.jsx— Markdown rendering tests
     ├── genId.test.jsx          — ID generation tests
-    └── useWebSocket.test.js    — WebSocket handler tests
+    ├── useWebSocket.test.js    — WebSocket handler tests
+    └── parseSlashCommand.test.js — Slash command parsing tests
 ```
 
 ## Wire Protocol

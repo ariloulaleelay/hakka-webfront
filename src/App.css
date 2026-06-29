@@ -44,12 +44,41 @@
 }
 
 .sidebar__section-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
   font-size: 10px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.8px;
   color: var(--text-muted);
   padding: 4px 16px 6px;
+}
+
+.sidebar__section-title .sidebar__section-add {
+  opacity: 0.6;
+  margin-left: auto;
+  margin-right: 4px;
+  flex-shrink: 0;
+  font-size: 21px;
+  font-weight: 400;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: opacity 0.1s, color 0.1s;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  background: transparent;
+  padding: 0;
+  line-height: 1;
+}
+
+.sidebar__section-title .sidebar__section-add:hover {
+  opacity: 1;
+  color: var(--text-primary);
 }
 
 .sidebar__session {
@@ -579,6 +608,33 @@
   outline: none;
 }
 
+/* === TokensBar (header right side) === */
+.tokens-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+.tokens-bar__label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+}
+
+.tokens-bar__count {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+  font-size: 12px;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
 .sidebar__footer {
   margin-top: auto;
   padding: 12px 16px;
@@ -601,6 +657,191 @@
 .sidebar__new-btn:hover {
   background: var(--bg-tertiary);
   border-color: var(--accent);
+}
+
+/* === Prompts list in sidebar === */
+.sidebar__prompt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 16px 6px 22px;
+  cursor: pointer;
+  transition: background 0.1s;
+  font-size: 13px;
+  color: var(--text-primary);
+}
+
+.sidebar__prompt:hover {
+  background: var(--bg-tertiary);
+}
+
+.sidebar__prompt-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sidebar__prompt-edit {
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 12px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.1s, background 0.1s, color 0.1s;
+  padding: 0;
+  line-height: 1;
+}
+
+.sidebar__prompt:hover .sidebar__prompt-edit {
+  opacity: 0.6;
+}
+
+.sidebar__prompt-edit:hover {
+  opacity: 1 !important;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+/* === Prompt Dialog === */
+.prompt-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  animation: fadeIn 0.15s ease;
+}
+
+.prompt-dialog {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 24px;
+  min-width: 400px;
+  max-width: 500px;
+  width: 90%;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+  animation: slideUp 0.15s ease;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.prompt-dialog__title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.prompt-dialog__label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+
+.prompt-dialog__input {
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+}
+
+.prompt-dialog__input:focus {
+  border-color: var(--accent);
+}
+
+.prompt-dialog__textarea {
+  padding: 8px 10px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  font-size: 13px;
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: 80px;
+}
+
+.prompt-dialog__textarea:focus {
+  border-color: var(--accent);
+}
+
+.prompt-dialog__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.prompt-dialog__cancel {
+  padding: 8px 16px;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-primary);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+}
+
+.prompt-dialog__cancel:hover {
+  background: var(--bg-tertiary);
+}
+
+.prompt-dialog__delete {
+  padding: 8px 16px;
+  border: 1px solid var(--error);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--error);
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.1s;
+  margin-right: auto;
+}
+
+.prompt-dialog__delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+}
+
+.prompt-dialog__save {
+  padding: 8px 16px;
+  border: none;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: opacity 0.1s;
+}
+
+.prompt-dialog__save:hover:not(:disabled) {
+  opacity: 0.9;
+}
+
+.prompt-dialog__save:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* === Main Area === */
@@ -726,43 +967,113 @@
   white-space: pre-wrap; overflow-x: hidden;
 }
 
-/* === Tool Call (inline, no icons, colored left border) === */
+/* === Tool Call (inline, expandable, colored left border) === */
 .tool-call {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+  display: block;
   font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
   font-size: 12px;
-  padding: 2px 8px;
+  padding: 0;
   border-radius: 4px;
   background: var(--bg-tertiary);
   border-left: 3px solid var(--text-muted);
   margin: 4px 0;
+  overflow: hidden;
 }
 
 .tool-call--start {
   border-left-color: var(--text-muted);
-  color: var(--text-secondary);
 }
 
 .tool-call--ok {
   border-left-color: var(--success);
-  color: var(--success);
 }
 
 .tool-call--err {
   border-left-color: var(--error);
+}
+
+.tool-call__summary {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s;
+}
+
+.tool-call__summary:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.tool-call--ok .tool-call__summary {
+  color: var(--success);
+}
+
+.tool-call--err .tool-call__summary {
   color: var(--error);
+}
+
+.tool-call--start .tool-call__summary {
+  color: var(--text-secondary);
+}
+
+.tool-call__chevron {
+  font-size: 9px;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 12px;
+  text-align: center;
 }
 
 .tool-call__name {
   overflow: hidden;
   text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tool-call__args {
   color: var(--text-muted);
   margin-left: 2px;
+}
+
+.tool-call__details {
+  padding: 4px 8px 8px 24px;
+  border-top: 1px solid var(--border-color);
+  margin-top: 2px;
+}
+
+.tool-call__section {
+  margin-top: 6px;
+}
+
+.tool-call__section:first-child {
+  margin-top: 0;
+}
+
+.tool-call__section-title {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-muted);
+  margin-bottom: 4px;
+}
+
+.tool-call__code {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-primary);
+  background: var(--bg-secondary);
+  padding: 6px 8px;
+  border-radius: 4px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 0;
+  max-height: 300px;
+  overflow-y: auto;
 }
 
 /* === Markdown / Code Block Styles === */

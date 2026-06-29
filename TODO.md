@@ -30,6 +30,13 @@
 - [x] **Configuration menu** — modal with WebSocket URL input, theme toggle, test connection button, connection status display
 - [x] **Light/Dark theme** — full CSS variable set for both themes, toggle via config menu, persisted to localStorage
 - [x] **Dynamic WebSocket URL** — read from store config, reconnect on change (useWebSocket reconnects when URL prop changes)
+- [x] **Tools table** — list all tools with name, tags, description, enable/disable toggle
+
+### Prompt Templates
+- [x] **Prompt library** — create, edit, delete prompt templates
+- [x] **LocalStorage persistence** — prompts survive page reload
+- [x] **Click to paste** — clicking a prompt in sidebar pastes it into the input area (not submitted, user can edit)
+- [x] **UI** — prompts section in left sidebar with + button, edit (✎) on hover, click to paste
 
 ### Other
 - [x] Send text via Enter (no Send button)
@@ -42,7 +49,7 @@
 - [x] **No double-append bug** — streaming deltas no longer duplicate when `TurnFinished` arrives
 - [x] **No duplicate subscriber bug** — switching sessions while streaming no longer duplicates every delta (server-side fix)
 - [x] **Clean input bar** — no border, no outline, no double padding; textarea flush to edges
-- [x] 119+ passing tests (10 test files)
+- [x] 130+ passing tests (11 test files)
 
 ---
 
@@ -56,16 +63,14 @@
 - [ ] **Mobile-friendly input and controls**
 
 ### UX
-
-- [ ] Prompt template library (need support on the server side)
-
-### Connectivity
-- [ ] **Ability to enter WebSocket address** — DONE via config menu ✓
-
-### Polish
 - [ ] Skeleton loading states for session list
 - [ ] Session search / fuzzy-find
-- [ ] Tool enable/disable UI from sidebar
+- [ ] Tool enable/disable UI from sidebar (right now it's in config menu)
+
+### Connection
+- [ ] **Multi-connection support** — connect to multiple Hakka instances simultaneously (per-session WebSocket URL, multiple concurrent WS connections, routing send/execute by session's associated server)
+
+### Polish
 - [ ] Split view — side-by-side sessions (future)
 
 ---

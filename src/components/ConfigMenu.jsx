@@ -64,9 +64,9 @@ export function ConfigMenu({ onClose, onExecute }) {
   const handleToggleTool = useCallback((toolName, currentEnabled) => {
     if (onExecute) {
       if (currentEnabled) {
-        onExecute('tool_disable', { name: toolName })
+        onExecute('tool_deny', { name: toolName })
       } else {
-        onExecute('tool_enable', { name: toolName })
+        onExecute('tool_allow', { name: toolName })
       }
     }
   }, [onExecute])

@@ -8,10 +8,22 @@ export function InputBar({ onSend, onCancel }) {
   const isStreaming = useChatStore((s) => s.isStreaming)
   const isCancelling = useChatStore((s) => s.isCancelling)
   const connectionStatus = useChatStore((s) => s.connectionStatus)
+  const draftText = useChatStore((s) => s.draftText)
+  const clearDraftText = useChatStore((s) => s.clearDraftText)
   const textareaRef = useRef(null)
 
   const isSubmitDisabled = isStreaming || connectionStatus !== 'connected'
   const showCancel = isStreaming || isCancelling
+
+  // Watch for draft text (paste from prompt library)
+  useEffect(() => {
+    if (draftText !== null && draftText !== undefined) {
+      setText(draftText)
+      clearDraftText()
+      // Focus the textarea after pasting
+      textareaRef.current?.focus()
+    }
+  }, [draftText, clearDraftText])
 
   // Auto-resize the textarea
   const resizeTextarea = useCallback(() => {
@@ -24,18 +36,15 @@ export function InputBar({ onSend, onCancel }) {
     el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden'
   }, [])
 
-  // Resize on text change
   useEffect(() => {
     resizeTextarea()
   }, [text, resizeTextarea])
 
-  // Resize on window resize
   useEffect(() => {
     window.addEventListener('resize', resizeTextarea)
     return () => window.removeEventListener('resize', resizeTextarea)
   }, [resizeTextarea])
 
-  // Re-focus the textarea when it becomes enabled again (stream ends or connects)
   useEffect(() => {
     if (!isSubmitDisabled && textareaRef.current && !showCancel) {
       textareaRef.current.focus()

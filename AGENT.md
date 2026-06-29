@@ -38,6 +38,7 @@ src/
 │   ├── InputBar.jsx                  # Text input + Send/Cancel button
 │   ├── MarkdownContent.jsx           # ReactMarkdown wrapper with custom code & link rendering
 │   ├── Sidebar.jsx                   # Session list with status dots, new/delete session
+│   ├── TokensBar.jsx                 # Estimated session tokens display (top-right header)
 │   └── ToolCall.jsx                  # Inline tool call display (name + snippet, color-coded)
 │
 ├── hooks/
@@ -54,9 +55,11 @@ src/
     ├── InputBar.test.jsx             # Input tests
     ├── MarkdownContent.test.jsx      # Markdown rendering tests
     ├── Sidebar.test.jsx              # Sidebar tests
+    ├── TokensBar.test.jsx           # TokensBar tests
     ├── genId.test.jsx                # ID generation tests
     ├── useChatStore.test.jsx         # Store unit tests (33+ tests covering all actions)
-    └── useWebSocket.test.js          # WebSocket handler tests
+    ├── useWebSocket.test.js          # WebSocket handler tests
+    └── parseSlashCommand.test.js     # Slash command parsing tests (22 tests)
 ```
 
 ---
@@ -72,6 +75,7 @@ messages: Message[]              // Messages for the currently active session
 sessionMessages: { [id]: [] }    // Cached messages for non-active sessions
 sessionStatus: { [id]: 'idle'|'streaming' }   // Per-session streaming status
 sessionCwds: { [id]: string }    // Per-session working directory
+sessionEstimatedTokens: { [id]: number }  // Per-session estimated context tokens from server meta events
 sessionId: string|null            // Currently active session ID
 sessions: Session[]               // List of all known sessions
 connectionStatus: 'connected'|'disconnected'|'reconnecting'
@@ -119,7 +123,7 @@ Tool calls are embedded **inline** within assistant message content using null-b
 - `appendDelta(delta, sessionId?)` — Append text to the current assistant message
 - `finalizeMessage(sessionId?)` — End streaming for a session
 - `addToolEvent(event, sessionId?)` — Add or update a tool call on the current assistant message
-- `handleCommandResult(cmd, data)` — Process server command results (session_list, session_switch, etc.)
+- `handleCommandResult(cmd, data)` — Process server command results (session_list, get_session, etc.)
 - `setSessionId(id)` — Register a new session; does NOT change active session if already known
 - `setMessages(rawMessages)` — Normalize and set messages for the active session
 - `setCwd(cwd)` — Update working directory and persist in per-session cache
@@ -133,12 +137,12 @@ Two helper functions handle routing:
 
 ### History Normalization (`normalizeMessages`)
 
-When receiving messages from the server (e.g. on `session_switch`), raw messages are normalized:
+When receiving messages from the server (e.g. on `get_session`), raw messages are normalized:
 
 1. **`role: "tool"` messages** — Merged into the preceding assistant message, matched by `tool_call_id`
 2. **`tool_calls` (snake_case)** — Converted from server format to internal `toolCalls[]` with embedded markers
 3. **Consecutive same-role messages** — Merged into a single message (content concatenated)
-4. **`session_switch`** also restores cached messages if available (client-side cache takes priority)
+4. **`get_session`** also restores cached messages if available (client-side cache takes priority)
 
 ---
 
@@ -159,15 +163,21 @@ File: `src/hooks/useWebSocket.js`
 The handler processes incoming JSON frames in strict order:
 
 1. **Error** — sets error, finalizes streaming if active
-2. **Cancel event** — clears cancelling state
-3. **Command result** (`event: 'command_result'`) — dispatches to `handleCommandResult` BEFORE any `setSessionId` call (critical for session_switch caching)
-4. **Session switch/create** (legacy text-based events) — sets session, clears messages
+2. **Session renamed** (`event: 'session_renamed'`) — updates session name in list
+3. **Meta event** (`event: 'meta'`) — token usage metadata; extracts `estimated_context_tokens` if present and stores it in the Zustand state
+4. **Cancel event** (`event: 'cancel'`) — clears cancelling state via `handleCancelResponse()`
 5. **Tool events** (`event: 'tool'`) — starts assistant message if needed, adds tool event
-6. **Stream delta** (`delta !== undefined`) — appends to current assistant message
-7. **Non-stream output** (`output + done`) — handles complete responses without deltas
-8. **Stream done** (`done: true`) — finalizes streaming
+6. **Command result** (`event: 'command_result'`) — dispatches to `handleCommandResult` BEFORE any `setSessionId` call (critical for get_session caching)
+7. **Session switch** (`event: 'command_result'` with `cmd: 'get_session'`) — switches session, loads messages
+8. **Session create** (`event: 'session_create'`) — registers new session
+9. **Session list** (`event: 'session_list'`) — updates session list
+10. **Session info** (`event: 'session_info'`) — updates session details
+11. **Client request** (`event: 'vim_request'` or `'client_request'`) — responds with `{"type":"response","request_id":"...","error":"unsupported"}`
+12. **Stream delta** (`delta !== undefined`) — appends to current assistant message
+13. **Non-stream output** (`output + done`) — handles complete responses without deltas
+14. **Stream done** (`done: true`) — finalizes streaming
 
-**IMPORTANT**: `setSessionId(sid)` is called only for non-command frames AFTER command result handling. This order is critical for session_switch to properly cache old session messages.
+**IMPORTANT**: `setSessionId(sid)` is called only for non-command frames AFTER command result handling. This order is critical for get_session to properly cache old session messages.
 
 ### Composable Returns
 
@@ -219,6 +229,16 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 - Inline text input on click; Enter saves, Esc cancels, blur saves
 - Label: `CWD`
 
+### TokensBar.jsx
+
+- Displays estimated session context tokens in the header (top-right)
+- Reads tokens for the current active session from `sessionEstimatedTokens` map
+- Only renders when the active session has a token value
+- Shows label "Tokens" and the numeric count in monospace font
+- Updated via `event: "meta"` with `data: { "estimated_context_tokens": N }` and `session_id` at the top level
+- Persisted per-session in the store (preserved across session switches and restored on switch-back)
+- Cleaned up on session delete
+
 ### InputBar.jsx
 
 - Text area input with Enter to send (Shift+Enter for newline)
@@ -238,6 +258,45 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 - Displays a tool call inline: `tool_name snippet`
 - Color-coded by status: green (`ok/done/complete/success`), red (`err/error/failed`), neutral (`start`)
 - Snippet cleaned: trimmed, quotes stripped, truncated to 100 chars
+
+---
+
+## Slash Commands
+
+All user input starting with `/` is **intercepted client-side and never sent to the LLM**. Parsing is handled by `parseSlashCommand(text, execute)` in `src/hooks/useWebSocket.js`, called from `App.jsx`'s `handleSend` before any WebSocket `send()`.
+
+Recognized commands are dispatched as structured JSON commands via `execute()`. Unknown commands produce an inline assistant error message in the chat.
+
+### Recognized Commands
+
+| User Input | JSON Command | Params |
+|---|---|---|
+| `/help` | `help` | `{}` |
+| `/tool list` or `/tool` | `tool_list` | `{}` |
+| `/tool allow <name>` | `tool_allow` | `{name}` |
+| `/tool deny <name>` | `tool_deny` | `{name}` |
+| `/model list` | `model_list` | `{}` |
+| `/models` | `model_list` | `{}` |
+| `/model switch <name>` | `model_switch` | `{name}` |
+| `/session list` | `session_list` | `{}` |
+| `/session info` | `session_info` | `{}` |
+| `/session rename <name>` | `session_rename` | `{name}` |
+| `/compact <n>` | `compact` | `{n}` |
+| `/cwd <path>` | `cwd_set` | `{cwd}` |
+| `/continue` | `continue` | `{}` |
+| `/start` | `start` | `{}` |
+
+Anything starting with `/` not in the list produces: `Unknown command: /command`.
+
+### Display Handling
+
+For commands that return data (`tool_list`, `help`, `model_list`, `model_switch`, `cwd_set`, `compact`), the `command_result` handler in `useWebSocket.js` formats the response as a readable assistant message. Other commands (e.g., `session_list`, `session_delete`) update internal store state silently.
+
+### Store State
+
+The store now tracks additional fields for slash commands:
+
+- `models` — array of `{name, current}` from `model_list` / `model_switch`
 
 ---
 
@@ -270,7 +329,7 @@ Available commands:
 |---|---|---|
 | `session_list` | `{}` | `{"sessions": [{id, short_id, name, created, message_count, current}]}` |
 | `session_create` | `{}` | `{"session": {id, short_id, name, client_cwd?}}` |
-| `session_switch` | `{id}` | `{"session": {id, client_cwd?}, "messages": [...]}` |
+| `get_session` | `{id}` | `{"session": {id, client_cwd?}, "messages": [...]}` |
 | `session_delete` | `{id}` | `{"deleted": id, "active_cleared": bool}` |
 | `session_info` | `{}` | `{"session": {id, name, model, message_count, client_cwd?}}` |
 | `session_rename` | `{name}` | `{"session": {id, name}}` |
@@ -278,14 +337,57 @@ Available commands:
 | `model_list` | `{}` | `{"models": [{name, current}]}` |
 | `model_switch` | `{name}` | `{"model": name}` |
 | `tool_list` | `{}` | `{"tools": [{name, description, enabled, tags}]}` |
-| `tool_enable` | `{name}` | `{"enabled": [name]}` |
-| `tool_disable` | `{name}` | `{"disabled": [name]}` |
+| `tool_allow` | `{"name": "tool_or_#tag"}` | `{"allowed": [name]}` |
+| `tool_deny` | `{"name": "tool_or_#tag"}` | `{"denied": [name]}` |
+| `cwd_set` | `{"cwd": "/path"}` | `{"cwd": "/path"}` |
 | `help` | `{}` | `{"commands": [...]}` |
 | `start` | `{}` | `{"session": {...}}` |
 | `compact` | `{n}` | `{"compact_soft_limit": n}` |
 | `continue` | `{}` | (triggers LLM) |
 
 ### 3. Response Types
+
+#### Token Usage Meta
+```json
+{
+  "session_id": "uuid",
+  "event": "meta",
+  "data": { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150 }
+}
+```
+
+Additional meta events:
+
+**Estimated Context Tokens**
+```json
+{
+  "session_id": "uuid",
+  "event": "meta",
+  "data": { "estimated_context_tokens": 12345 }
+}
+```
+This event is processed by the frontend to display the estimated token count for the session identified by `session_id`. Tokens are stored per-session and preserved across session switches, so switching back to a previous chat restores its token count.
+
+#### Cancel Acknowledgement
+```json
+{
+  "session_id": "uuid",
+  "event": "cancel",
+  "data": { "cancelled": true }
+}
+```
+
+#### Client Request (Vim Tool)
+```json
+{
+  "session_id": "uuid",
+  "event": "vim_request",
+  "vim_request": {
+    "request_id": "...",
+    "command": "..."
+  }
+}
+```
 
 #### Command Result
 ```json
@@ -354,14 +456,14 @@ Status values: `start`, `ok`, `err`, `done`
 - Each session has its own message cache (`sessionMessages[id]`) and status (`sessionStatus[id]`)
 - `setSessionId()` only activates new sessions; known sessions don't change the active ID
 - Stream events are routed by `session_id` to the correct cache via `getSessionMsgs()`
-- `session_switch` caches current messages before loading target
+- `get_session` caches current messages before loading target
 
 ### Session Switch Flow
 
 1. User clicks another session in sidebar
-2. `App.jsx` calls `execute('session_switch', { id })`
+2. `App.jsx` calls `execute('get_session', { id })`
 3. Server responds with `command_result` containing session data + messages
-4. `handleCommandResult('session_switch')`:
+4. `handleCommandResult('get_session')`:
    - Saves current session's messages + CWD to cache
    - Loads target session's messages (from cache if available, else from server)
    - Restores target session's CWD
@@ -426,5 +528,5 @@ npm run build       # dist/
 2. **Tool calls embedded inline in content** — `\x00TOOL:N\x00` markers ensure correct positioning without complex state tracking.
 3. **Per-session CWD stored client-side** — `sessionCwds` map persists CWD per session even if server doesn't return it.
 4. **setSessionId does NOT activate known sessions** — prevents stream events for background sessions from hijacking the active session.
-5. **Command results handled before setSessionId** — critical ordering for session_switch to cache old session messages correctly.
+5. **Command results handled before setSessionId** — critical ordering for get_session to cache old session messages correctly.
 6. **Single connection, multi-session routing** — one WebSocket; all sessions share it, routing by `session_id` field.

@@ -9,11 +9,13 @@ describe('useChatStore', () => {
       sessions: [],
       sessionMessages: {},
       sessionStatus: {},
+      sessionEstimatedTokens: {},
       sessionUnread: {},
       connectionStatus: 'disconnected',
       isStreaming: false,
       isCancelling: false,
       error: null,
+      models: [],
     })
   })
 
@@ -118,8 +120,8 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().messages).toEqual([])
   })
 
-  it('should handle session_switch command result with messages and set cwd', () => {
-    useChatStore.getState().handleCommandResult('session_switch', {
+  it('should handle get_session command result with messages and set cwd', () => {
+    useChatStore.getState().handleCommandResult('get_session', {
       session: { id: 'switched', name: 'Old Chat', client_cwd: '/home/user/project' },
       messages: [
         { role: 'user', content: 'Hello' },
@@ -131,9 +133,9 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().cwd).toBe('/home/user/project')
   })
 
-  it('should handle session_switch without client_cwd (keep current cwd)', () => {
+  it('should handle get_session without client_cwd (keep current cwd)', () => {
     useChatStore.setState({ cwd: '/my/current/dir' })
-    useChatStore.getState().handleCommandResult('session_switch', {
+    useChatStore.getState().handleCommandResult('get_session', {
       session: { id: 'switched', name: 'Other' },
       messages: [],
     })
@@ -211,9 +213,9 @@ describe('useChatStore', () => {
     })
   })
 
-  it('should merge tool messages and consecutive assistants via session_switch', () => {
+  it('should merge tool messages and consecutive assistants via get_session', () => {
     const store = useChatStore.getState()
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-1' },
       messages: [
         { role: 'user', content: 'Hi' },
@@ -231,7 +233,7 @@ describe('useChatStore', () => {
 
   it('should handle multiple tool messages merged into same assistant', () => {
     const store = useChatStore.getState()
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-1' },
       messages: [
         { role: 'user', content: 'Do tools' },
@@ -277,7 +279,7 @@ describe('useChatStore', () => {
 
   it('should handle snake_case tool_calls from server history and match by tool_call_id', () => {
     const store = useChatStore.getState()
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-1' },
       messages: [
         { role: 'user', content: 'Read a file' },
@@ -314,7 +316,7 @@ describe('useChatStore', () => {
 
   it('should handle multiple snake_case tool_calls with matching tool messages', () => {
     const store = useChatStore.getState()
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-2' },
       messages: [
         { role: 'user', content: 'Do both' },
@@ -344,7 +346,7 @@ describe('useChatStore', () => {
 
   // --- New parallel session tests ---
 
-  it('should save current messages to cache and load target on session_switch', () => {
+  it('should save current messages to cache and load target on get_session', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', {
       session: { id: 'session-a', short_id: 'a' },
@@ -354,7 +356,7 @@ describe('useChatStore', () => {
     store.appendDelta('Response from A')
     store.finalizeMessage()
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'session-b', short_id: 'b' },
       messages: [
         { role: 'user', content: 'Hello from B' },
@@ -382,12 +384,12 @@ describe('useChatStore', () => {
     store.appendDelta('Resp A1')
     store.finalizeMessage()
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'session-b', short_id: 'b' },
       messages: [{ role: 'user', content: 'Msg B1' }],
     })
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'session-a', short_id: 'a' },
       messages: [],
     })
@@ -407,7 +409,7 @@ describe('useChatStore', () => {
     store.sendMessage('Hi')
     store.finalizeMessage()
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'session-b', short_id: 'b' },
       messages: [],
     })
@@ -447,7 +449,7 @@ describe('useChatStore', () => {
     store.handleCommandResult('session_create', {
       session: { id: 'sess-a', short_id: 'a' },
     })
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-b', short_id: 'b' },
       messages: [],
     })
@@ -470,7 +472,7 @@ describe('useChatStore', () => {
     store.startAssistantMessage()
     store.appendDelta('Thinking...')
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-b', short_id: 'b' },
       messages: [{ role: 'user', content: 'B says hi' }],
     })
@@ -478,7 +480,7 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
     expect(useChatStore.getState().isStreaming).toBe(false)
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-a', short_id: 'a' },
       messages: [],
     })
@@ -513,7 +515,7 @@ describe('useChatStore', () => {
     store.appendDelta('Alpha response')
     store.finalizeMessage()
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-beta' },
       messages: [{ role: 'user', content: 'Beta first' }],
     })
@@ -523,7 +525,7 @@ describe('useChatStore', () => {
     expect(state.messages).toHaveLength(1)
     expect(state.messages[0].content).toBe('Beta first')
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-alpha' },
       messages: [],
     })
@@ -547,7 +549,7 @@ describe('useChatStore', () => {
     store.startAssistantMessage('sess-a')
     store.appendDelta('Response from A', 'sess-a')
 
-    store.handleCommandResult('session_switch', {
+    store.handleCommandResult('get_session', {
       session: { id: 'sess-b' },
       messages: [{ role: 'user', content: 'Hello in B' }],
     })
@@ -584,7 +586,7 @@ describe('useChatStore', () => {
     expect(sessions[2].id).toBe('old')
   })
 
-  it('should put sessions without updated_at at the end', () => {
+  it('should put sessions without updated_at at the top (new sessions first)', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_list', {
       sessions: [
@@ -594,8 +596,8 @@ describe('useChatStore', () => {
     })
     const sessions = useChatStore.getState().sessions
     expect(sessions).toHaveLength(2)
-    expect(sessions[0].id).toBe('has-date')
-    expect(sessions[1].id).toBe('no-date')
+    expect(sessions[0].id).toBe('no-date')
+    expect(sessions[1].id).toBe('has-date')
   })
 
   it('should keep sessions sorted after session_create adds a new one', () => {
@@ -633,7 +635,7 @@ describe('useChatStore', () => {
   it('should mark background session as unread on startAssistantMessage', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     store.startAssistantMessage('sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
@@ -643,7 +645,7 @@ describe('useChatStore', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
     store.startAssistantMessage('sess-a')
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     store.appendDelta('new data', 'sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
@@ -653,7 +655,7 @@ describe('useChatStore', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
     store.startAssistantMessage('sess-a')
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     store.addToolEvent({ tool: 'shell', status: 'start', exec_snippet: 'ls' }, 'sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
@@ -663,7 +665,7 @@ describe('useChatStore', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
     store.startAssistantMessage('sess-a')
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     store.finalizeMessage('sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
@@ -672,7 +674,7 @@ describe('useChatStore', () => {
   it('should clear unread when switching to a session', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     // Background activity on A
     store.startAssistantMessage('sess-a')
@@ -681,7 +683,7 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
 
     // Switch back to A — should clear unread
-    store.handleCommandResult('session_switch', { session: { id: 'sess-a' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
 
     const unread = useChatStore.getState().sessionUnread
     expect(unread['sess-a']).toBeUndefined()
@@ -707,7 +709,7 @@ describe('useChatStore', () => {
   it('should clear unread via markSessionSeen', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
 
     store.startAssistantMessage('sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
@@ -719,7 +721,7 @@ describe('useChatStore', () => {
   it('should clean up unread on session_delete', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
-    store.handleCommandResult('session_switch', { session: { id: 'sess-b' }, messages: [] })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
     store.startAssistantMessage('sess-a')
     expect(useChatStore.getState().sessionUnread['sess-a']).toBe(true)
 
@@ -735,5 +737,262 @@ describe('useChatStore', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-new' } })
     expect(useChatStore.getState().sessionUnread['sess-new']).toBeUndefined()
+  })
+
+  describe('tool commands', () => {
+    it('should populate tools from tool_list', () => {
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_list', {
+        tools: [
+          { name: 'read_file', description: 'Read a file', enabled: true, tags: ['fs'] },
+          { name: 'shell', description: 'Run shell', enabled: false, tags: ['exec'] },
+        ],
+      })
+      const state = useChatStore.getState()
+      expect(state.tools).toHaveLength(2)
+      expect(state.tools[0].name).toBe('read_file')
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].name).toBe('shell')
+      expect(state.tools[1].enabled).toBe(false)
+    })
+
+    it('should handle empty tool_list', () => {
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_list', { tools: [] })
+      expect(useChatStore.getState().tools).toEqual([])
+    })
+
+    it('should handle tool_list with missing tools field', () => {
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_list', {})
+      // Should not crash, tools should remain unchanged
+      expect(useChatStore.getState().tools).toEqual([])
+    })
+
+    it('should enable tools from tool_enable', () => {
+      useChatStore.setState({
+        tools: [
+          { name: 'read_file', enabled: false },
+          { name: 'shell', enabled: false },
+        ],
+      })
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_enable', { enabled: ['read_file'] })
+      const state = useChatStore.getState()
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].enabled).toBe(false)
+    })
+
+    it('should disable tools from tool_disable', () => {
+      useChatStore.setState({
+        tools: [
+          { name: 'read_file', enabled: true },
+          { name: 'shell', enabled: true },
+        ],
+      })
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_disable', { disabled: ['shell'] })
+      const state = useChatStore.getState()
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].enabled).toBe(false)
+    })
+
+    it('should allow tools from tool_allow', () => {
+      useChatStore.setState({
+        tools: [
+          { name: 'read_file', enabled: false },
+          { name: 'shell', enabled: false },
+        ],
+      })
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_allow', { allowed: ['read_file'] })
+      const state = useChatStore.getState()
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].enabled).toBe(false)
+    })
+
+    it('should deny tools from tool_deny', () => {
+      useChatStore.setState({
+        tools: [
+          { name: 'read_file', enabled: true },
+          { name: 'shell', enabled: true },
+        ],
+      })
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_deny', { denied: ['shell'] })
+      const state = useChatStore.getState()
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].enabled).toBe(false)
+    })
+
+    it('should coerce string enabled to boolean', () => {
+      const store = useChatStore.getState()
+      store.handleCommandResult('tool_list', {
+        tools: [
+          { name: 'read_file', enabled: 'true' },
+          { name: 'shell', enabled: '' },
+        ],
+      })
+      const state = useChatStore.getState()
+      expect(state.tools[0].enabled).toBe(true)
+      expect(state.tools[1].enabled).toBe(false)
+    })
+  })
+
+  // --- Purple dot / streaming status on active session ---
+
+  it('should preserve sessionStatus when switching via get_session', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.sendMessage('Hello')
+    store.startAssistantMessage()
+    store.appendDelta('Thinking...')
+
+    // Session A should be streaming
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    expect(useChatStore.getState().isStreaming).toBe(true)
+
+    // Switch to session B
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-b' },
+      messages: [],
+    })
+
+    // After switch: session A's status should still be 'streaming' (preserved in sessionStatus)
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    // isStreaming reflects the active session (B), which is not streaming
+    expect(useChatStore.getState().isStreaming).toBe(false)
+
+    // Switch back to session A
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-a' },
+      messages: [],
+    })
+
+    // Session A should still be streaming
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    expect(useChatStore.getState().isStreaming).toBe(true)
+
+    // Now finalize A (stream finished)
+    store.finalizeMessage()
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('idle')
+    expect(useChatStore.getState().isStreaming).toBe(false)
+  })
+
+  it('should keep sessionStatus streaming when get_session loads same session', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.sendMessage('Hi')
+    store.startAssistantMessage()
+    store.appendDelta('streaming...')
+
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+
+    // Simulate get_session for the SAME session (e.g., on reconnect)
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-a' },
+      messages: [{ role: 'user', content: 'Restored' }],
+    })
+
+    // sessionStatus should still be 'streaming' (the handler preserves it)
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    expect(useChatStore.getState().isStreaming).toBe(true)
+  })
+
+  it('should set isStreaming=false after get_session switches to non-streaming session, then true again on send', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+
+    // B is not streaming
+    expect(useChatStore.getState().isStreaming).toBe(false)
+    expect(useChatStore.getState().sessionStatus['sess-b']).toBeUndefined()
+
+    // Simulate user sending a message (like send() does)
+    const state = useChatStore.getState()
+    state.sendMessage('Hello B', 'sess-b')
+    state.setStreaming(true)
+    useChatStore.setState({
+      sessionStatus: { ...state.sessionStatus, 'sess-b': 'streaming' },
+    })
+
+    // Now B should be streaming
+    expect(useChatStore.getState().sessionStatus['sess-b']).toBe('streaming')
+    expect(useChatStore.getState().isStreaming).toBe(true)
+  })
+
+  it('should keep sessionStatus for all sessions during get_session switch', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.startAssistantMessage()
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+    store.startAssistantMessage('sess-b')
+
+    // Both sessions should show as streaming
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    expect(useChatStore.getState().sessionStatus['sess-b']).toBe('streaming')
+
+    // Switch to a third session C
+    store.handleCommandResult('get_session', { session: { id: 'sess-c' }, messages: [] })
+
+    // A and B should still be streaming
+    expect(useChatStore.getState().sessionStatus['sess-a']).toBe('streaming')
+    expect(useChatStore.getState().sessionStatus['sess-b']).toBe('streaming')
+    expect(useChatStore.getState().sessionStatus['sess-c']).toBeUndefined()
+    expect(useChatStore.getState().isStreaming).toBe(false)
+  })
+
+  // --- Estimated Context Tokens ---
+
+  it('should start with sessionEstimatedTokens as empty map', () => {
+    expect(useChatStore.getState().sessionEstimatedTokens).toEqual({})
+  })
+
+  it('should set estimated context tokens per session', () => {
+    const store = useChatStore.getState()
+    store.setEstimatedContextTokens(12345, 'session-1')
+    expect(useChatStore.getState().sessionEstimatedTokens['session-1']).toBe(12345)
+  })
+
+  it('should set estimated context tokens for active session when sessionId omitted', () => {
+    useChatStore.setState({ sessionId: 'sess-active' })
+    const store = useChatStore.getState()
+    store.setEstimatedContextTokens(500)
+    expect(useChatStore.getState().sessionEstimatedTokens['sess-active']).toBe(500)
+  })
+
+  it('should set estimated context tokens to 0', () => {
+    const store = useChatStore.getState()
+    store.setEstimatedContextTokens(0, 'session-1')
+    expect(useChatStore.getState().sessionEstimatedTokens['session-1']).toBe(0)
+  })
+
+  it('should preserve estimated context tokens across session switch', () => {
+    const store = useChatStore.getState()
+    // Create session A and set tokens
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setEstimatedContextTokens(100, 'sess-a')
+
+    // Switch to session B
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+
+    // Set tokens for B
+    store.setEstimatedContextTokens(200, 'sess-b')
+
+    // Switch back to A - should restore tokens
+    store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
+
+    expect(useChatStore.getState().sessionEstimatedTokens['sess-a']).toBe(100)
+    expect(useChatStore.getState().sessionEstimatedTokens['sess-b']).toBe(200)
+  })
+
+  it('should clean up estimated context tokens on session_delete', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setEstimatedContextTokens(999, 'sess-a')
+
+    store.handleCommandResult('session_delete', { deleted: 'sess-a', active_cleared: true })
+
+    expect(useChatStore.getState().sessionEstimatedTokens['sess-a']).toBeUndefined()
   })
 })
