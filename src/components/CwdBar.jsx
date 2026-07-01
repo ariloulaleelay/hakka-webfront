@@ -4,8 +4,9 @@ import { useChatStore } from '../store/useChatStore'
 /**
  * Editable working directory indicator shown in the header bar.
  * Click to edit, Enter to save, Esc to cancel.
+ * Calls onCwdChange when the user saves a new CWD (to sync with server).
  */
-export function CwdBar() {
+export function CwdBar({ onCwdChange }) {
   const cwd = useChatStore((s) => s.cwd)
   const setCwd = useChatStore((s) => s.setCwd)
   const [editing, setEditing] = useState(false)
@@ -26,7 +27,10 @@ export function CwdBar() {
 
   const handleSave = () => {
     const trimmed = draft.trim()
-    if (trimmed) setCwd(trimmed)
+    if (trimmed) {
+      setCwd(trimmed)
+      onCwdChange?.(trimmed)
+    }
     setEditing(false)
   }
 

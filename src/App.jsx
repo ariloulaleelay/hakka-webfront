@@ -4,7 +4,8 @@ import { InputBar } from './components/InputBar'
 import { Sidebar } from './components/Sidebar'
 import { CwdBar } from './components/CwdBar'
 import { TokensBar } from './components/TokensBar'
-import { useWebSocket, parseSlashCommand } from './hooks/useWebSocket'
+import { useWebSocket } from './hooks/useWebSocket'
+import { parseSlashCommand } from './utils/parseSlashCommand'
 import { useChatStore } from './store/useChatStore'
 import './App.css'
 
@@ -58,6 +59,13 @@ function App() {
     [execute]
   )
 
+  const handleCwdChange = useCallback(
+    (cwd) => {
+      execute('cwd_set', { cwd })
+    },
+    [execute]
+  )
+
   return (
     <div className="app">
       <Sidebar
@@ -69,7 +77,7 @@ function App() {
 
       <div className="app__main-area">
         <header className="app__header">
-          <CwdBar />
+          <CwdBar onCwdChange={handleCwdChange} />
           <TokensBar />
         </header>
 

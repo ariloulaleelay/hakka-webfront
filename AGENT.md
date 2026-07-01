@@ -76,8 +76,9 @@ sessionMessages: { [id]: [] }    // Cached messages for non-active sessions
 sessionStatus: { [id]: 'idle'|'streaming' }   // Per-session streaming status
 sessionCwds: { [id]: string }    // Per-session working directory
 sessionEstimatedTokens: { [id]: number }  // Per-session estimated context tokens from server meta events
+sessionTotalCost: { [id]: number }  // Per-session total cost in $ from server meta events
 sessionId: string|null            // Currently active session ID
-sessions: Session[]               // List of all known sessions
+sessions: Session[]               // List of all known sessions (each may have `model` field)
 connectionStatus: 'connected'|'disconnected'|'reconnecting'
 isStreaming: boolean              // Whether current active session is streaming
 isCancelling: boolean
@@ -137,12 +138,33 @@ Two helper functions handle routing:
 
 ### History Normalization (`normalizeMessages`)
 
-When receiving messages from the server (e.g. on `get_session`), raw messages are normalized:
+**Legacy path** — used when the server sends `messages` without `events`.
+When receiving messages from the server (e.g. on `get_session` without events), raw messages are normalized:
 
 1. **`role: "tool"` messages** — Merged into the preceding assistant message, matched by `tool_call_id`
 2. **`tool_calls` (snake_case)** — Converted from server format to internal `toolCalls[]` with embedded markers
 3. **Consecutive same-role messages** — Merged into a single message (content concatenated)
 4. **`get_session`** also restores cached messages if available (client-side cache takes priority)
+
+### History Replay via Events (`replayEvents`)
+
+**New path** — used when the server sends `events` alongside `messages` on `get_session`.
+The `replayEvents(events)` function processes a replay-friendly sequence of typed events that mirror the live wire protocol.
+
+Event types and their processing:
+
+| Event type | What it does |
+|---|---|
+| `"chat"` | Creates or merges a user message from `event.text` |
+| `"delta"` | Creates or appends to the current assistant message |
+| `"tool"` (status `"start"`) | Adds a tool call with `\x00TOOL:N\x00` marker |
+| `"tool"` (status `"ok"`/`"err"`) | Updates matching tool call by `event.id` (tool_call_id) |
+| `"usage"` | Skipped (tokens tracked per-session in store maps) |
+| `"done"` | Resets the current assistant tracker (bare terminal marker) |
+
+**In-flight detection**: If the events array does not end with `{"type":"done"}`, the session is considered in-flight (still streaming). The `get_session` handler sets `isStreaming: true` and `sessionStatus: 'streaming'` for that session.
+
+**Key advantage**: No complex message normalization needed — events already have the correct shape. The same events are used for both live streaming and history replay, ensuring consistent rendering.
 
 ---
 
@@ -150,40 +172,36 @@ When receiving messages from the server (e.g. on `get_session`), raw messages ar
 
 File: `src/hooks/useWebSocket.js`
 
-### Connection Lifecycle
+### Connection Lifecycle (v2 protocol)
 
 1. On mount, connects to the WebSocket URL
 2. Auto-reconnect with exponential backoff: 1s, 2s, 4s, 8s, 16s
-3. On open, sends `session_list` to fetch current sessions
+3. **On open, no frames are sent** — the server pushes a `type:"welcome"` frame with session list
 4. On close/disconnect, sets status to `'disconnected'` and schedules reconnect
 5. On unmount, cleanly closes the connection
 
-### Frame Handling (`handleFrame`)
+### Frame Handling (`handleV2Frame`)
 
-The handler processes incoming JSON frames in strict order:
+Every incoming frame has a mandatory `type` field. Processing is done via a `switch` on `frame.type`:
 
-1. **Error** — sets error, finalizes streaming if active
-2. **Session renamed** (`event: 'session_renamed'`) — updates session name in list
-3. **Meta event** (`event: 'meta'`) — token usage metadata; extracts `estimated_context_tokens` if present and stores it in the Zustand state
-4. **Cancel event** (`event: 'cancel'`) — clears cancelling state via `handleCancelResponse()`
-5. **Tool events** (`event: 'tool'`) — starts assistant message if needed, adds tool event
-6. **Command result** (`event: 'command_result'`) — dispatches to `handleCommandResult` BEFORE any `setSessionId` call (critical for get_session caching)
-7. **Session switch** (`event: 'command_result'` with `cmd: 'get_session'`) — switches session, loads messages
-8. **Session create** (`event: 'session_create'`) — registers new session
-9. **Session list** (`event: 'session_list'`) — updates session list
-10. **Session info** (`event: 'session_info'`) — updates session details
-11. **Client request** (`event: 'vim_request'` or `'client_request'`) — responds with `{"type":"response","request_id":"...","error":"unsupported"}`
-12. **Stream delta** (`delta !== undefined`) — appends to current assistant message
-13. **Non-stream output** (`output + done`) — handles complete responses without deltas
-14. **Stream done** (`done: true`) — finalizes streaming
-
-**IMPORTANT**: `setSessionId(sid)` is called only for non-command frames AFTER command result handling. This order is critical for get_session to properly cache old session messages.
+| `type` | What it does |
+|---|---|
+| `"welcome"` | Processes session list, checks for `in_flight` session (auto-loads it), falls back to localStorage |
+| `"delta"` | Streaming text chunk — appends `frame.text` to current assistant message |
+| `"output"` | Full non-stream reply (before `"done"`) — creates/appends assistant message |
+| `"done"` | **Terminal** frame — finalizes streaming, handles cancellation/error/stats |
+| `"tool"` | Tool lifecycle — matched by `frame.id` (unique tool call ID) |
+| `"usage"` | Token usage after each LLM call — updates `estimated_context_tokens` and `total_cost` |
+| `"result"` | Command output — dispatches to `handleCommandResult(cmd, data)` |
+| `"session"` | Session lifecycle event — dispatches on `frame.event` (created/renamed/deleted) or `frame.data` for session switch |
+| `"req"` | Server requests client action — responds with `{"type":"resp","error":"unsupported"}` |
+| `"error"` | Error before any turn started |
 
 ### Composable Returns
 
-- `send(sessionId, text, stream?)` — Send a chat message
-- `execute(cmd, params)` — Send a structured JSON command (not shown in chat)
-- `cancel(sessionId)` — Cancel an in-flight request
+- `send(sessionId, text, stream?)` — Send a chat message (`type:"chat"`)
+- `execute(cmd, params)` — Send a structured JSON command (`type:"cmd"`)
+- `cancel(sessionId)` — Cancel an in-flight request (`type:"cancel"`)
 
 ---
 
@@ -231,11 +249,14 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 
 ### TokensBar.jsx
 
-- Displays estimated session context tokens in the header (top-right)
+- Displays estimated session context tokens, session model, and total cost in the header (top-right)
 - Reads tokens for the current active session from `sessionEstimatedTokens` map
-- Only renders when the active session has a token value
-- Shows label "Tokens" and the numeric count in monospace font
-- Updated via `event: "meta"` with `data: { "estimated_context_tokens": N }` and `session_id` at the top level
+- Reads cost for the current active session from `sessionTotalCost` map
+- Reads model name for the current active session from `sessions` array (from `session.model`)
+- Renders when the active session has a token value, a model name, or a total cost (any of the three)
+- Shows label "Model" and the model name (if available), then a separator, then "Tokens" and the numeric count, then if cost is present a separator, "Cost" and the formatted cost (e.g. `$1.50`)
+- Model name is colored with the accent color; cost is colored with the success (green) color
+- Updated via `type:"usage"` frame (includes `estimated_context_tokens` and `total_cost`) and via `stats` in `type:"done"` frame
 - Persisted per-session in the store (preserved across session switches and restored on switch-back)
 - Cleaned up on session delete
 
@@ -300,184 +321,229 @@ The store now tracks additional fields for slash commands:
 
 ---
 
-## Wire Protocol (v2 — JSON Commands)
+## Wire Protocol (v2 — Type-Discriminated Frames)
 
-### 1. Chat Requests
+Every frame has a mandatory `type` field. No field sniffing.
 
-```json
-{
-  "session_id": "uuid-or-prefix",
-  "input": "Hello Hakka!",
-  "stream": true,
-  "cwd": "/path/to/project"
-}
-```
+### Client → Server
 
-### 2. JSON Commands (Structured API)
-
-```json
-{
-  "session_id": "uuid",
-  "command": { "cmd": "session_list", "params": {} },
-  "cwd": "/path"
-}
-```
-
-Available commands:
-
-| cmd | params | response data |
+| `type` | Purpose | Key fields |
 |---|---|---|
-| `session_list` | `{}` | `{"sessions": [{id, short_id, name, created, message_count, current}]}` |
-| `session_create` | `{}` | `{"session": {id, short_id, name, client_cwd?}}` |
-| `get_session` | `{id}` | `{"session": {id, client_cwd?}, "messages": [...]}` |
-| `session_delete` | `{id}` | `{"deleted": id, "active_cleared": bool}` |
-| `session_info` | `{}` | `{"session": {id, name, model, message_count, client_cwd?}}` |
-| `session_rename` | `{name}` | `{"session": {id, name}}` |
-| `session_autorename` | `{}` | `{"session": {id, name}}` |
-| `model_list` | `{}` | `{"models": [{name, current}]}` |
-| `model_switch` | `{name}` | `{"model": name}` |
-| `tool_list` | `{}` | `{"tools": [{name, description, enabled, tags}]}` |
-| `tool_allow` | `{"name": "tool_or_#tag"}` | `{"allowed": [name]}` |
-| `tool_deny` | `{"name": "tool_or_#tag"}` | `{"denied": [name]}` |
-| `cwd_set` | `{"cwd": "/path"}` | `{"cwd": "/path"}` |
-| `help` | `{}` | `{"commands": [...]}` |
-| `start` | `{}` | `{"session": {...}}` |
-| `compact` | `{n}` | `{"compact_soft_limit": n}` |
-| `continue` | `{}` | (triggers LLM) |
+| `"chat"` | Normal chat turn | `session_id`, `input`, `stream` |
+| `"cmd"` | JSON command | `session_id`, `command: {cmd, params}` |
+| `"resp"` | Reply to server `req` | `request_id`, `result`, `error` |
+| `"cancel"` | Cancel running turn | `session_id` |
 
-### 3. Response Types
+#### `type: "chat"` — Normal chat turn
 
-#### Token Usage Meta
 ```json
-{
-  "session_id": "uuid",
-  "event": "meta",
-  "data": { "prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150 }
-}
+{"type":"chat", "session_id":"<uuid>", "input":"Hello!", "stream":true}
 ```
 
-Additional meta events:
+- `session_id` — omit to auto-create.
+- `input` — user text sent directly to the LLM.
+- `stream` — `true` for token-by-token deltas.
 
-**Estimated Context Tokens**
-```json
-{
-  "session_id": "uuid",
-  "event": "meta",
-  "data": { "estimated_context_tokens": 12345 }
-}
-```
-This event is processed by the frontend to display the estimated token count for the session identified by `session_id`. Tokens are stored per-session and preserved across session switches, so switching back to a previous chat restores its token count.
+#### `type: "cmd"` — Structured JSON command
 
-#### Cancel Acknowledgement
 ```json
-{
-  "session_id": "uuid",
-  "event": "cancel",
-  "data": { "cancelled": true }
-}
+{"type":"cmd", "session_id":"...", "command":{"cmd":"session_list"}}
+{"type":"cmd", "session_id":"...", "command":{"cmd":"tool_allow","params":{"name":"#all"}}}
 ```
 
-#### Client Request (Vim Tool)
+Commands table:
+
+| `cmd` | `params` | Description |
+|---|---|---|
+| `help` | — | List available commands |
+| `continue` | — | Continue LLM turn without new user input |
+| `start` | — | Create fresh session with all tools enabled |
+| `compact` | `{"n": <int>}` | Set context soft limit (0 = off) |
+| `cwd_set` | `{"cwd": "/path"}` | Persist working directory on the session |
+| `session_list` | — | List all sessions in the namespace |
+| `session_create` | — | Create a new empty session |
+| `get_session` | `{"id": "<uuid or prefix>"}` | Fetch session data and messages |
+| `session_delete` | `{"id": "<uuid>"}` | Delete a session (`"this"` for current) |
+| `session_info` | — | Show current session details |
+| `session_rename` | `{"name": "..."}` | Rename the current session |
+| `session_autorename` | — | Ask the LLM to generate a session name |
+| `model_list` | — | List registered models |
+| `model_switch` | `{"name": "..."}` | Switch the session to a different model |
+| `tool_list` | — | List tools with status |
+| `tool_allow` | `{"name": "tool_or_#tag"}` | Allow and enable a tool or tag |
+| `tool_deny` | `{"name": "tool_or_#tag"}` | Deny (hide) a tool or tag |
+
+#### `type: "resp"` — Client response to a server request
+
 ```json
-{
-  "session_id": "uuid",
-  "event": "vim_request",
-  "vim_request": {
-    "request_id": "...",
-    "command": "..."
-  }
-}
+{"type":"resp", "request_id":"req-1", "result":[1,2,3]}
+{"type":"resp", "request_id":"req-1", "error":"unsupported"}
 ```
 
-#### Command Result
-```json
-{
-  "session_id": "uuid",
-  "event": "command_result",
-  "cmd": "session_list",
-  "data": { "sessions": [...] },
-  "done": true
-}
-```
+- Sent in reply to a `type:"req"` frame (e.g. Neovim Lua eval).
+- `result` is a JSON value; `error` is a string. Mutually exclusive.
 
-#### Tool Events
-```json
-{
-  "session_id": "uuid",
-  "event": "tool",
-  "tool": "shell",
-  "status": "start",
-  "args": { "command": "curl wttr.in" },
-  "exec_snippet": "curl wttr.in"
-}
-```
+#### `type: "cancel"` — Cancel an in-flight turn
 
-Status values: `start`, `ok`, `err`, `done`
-
-#### Stream Delta
 ```json
-{
-  "session_id": "uuid",
-  "delta": "partial response text"
-}
-```
-
-#### Stream Done
-```json
-{
-  "session_id": "uuid",
-  "done": true
-}
-```
-
-#### Non-stream Output
-```json
-{
-  "session_id": "uuid",
-  "output": "complete response",
-  "done": true
-}
-```
-
-#### Error
-```json
-{
-  "session_id": "uuid",
-  "error": "error message"
-}
+{"type":"cancel", "session_id":"<uuid>"}
 ```
 
 ---
 
-## Multi-Session Architecture
+### Server → Client
 
-### Parallel Sessions
+| `type` | When emitted | Terminal? |
+|---|---|---|
+| `"welcome"` | Immediately on WebSocket connect | No |
+| `"delta"` | Mid-stream text chunk | No |
+| `"output"` | Full non-stream reply (before `done`) | No |
+| `"done"` | Turn/command is complete | **Yes** |
+| `"tool"` | Tool lifecycle (start/ok/err) | No |
+| `"usage"` | Token usage after each LLM call | No |
+| `"req"` | Server asks client to run something | No |
+| `"result"` | Command output (session_list, etc.) | No |
+| `"session"` | Session lifecycle (created/renamed/deleted via `frame.event`, session switch via `frame.data`) | No |
+| `"error"` | Error before any turn | Yes |
 
-- Each session has its own message cache (`sessionMessages[id]`) and status (`sessionStatus[id]`)
-- `setSessionId()` only activates new sessions; known sessions don't change the active ID
-- Stream events are routed by `session_id` to the correct cache via `getSessionMsgs()`
-- `get_session` caches current messages before loading target
+**Terminal** means the engine is ready for new input.
 
-### Session Switch Flow
+#### `type: "welcome"` — Connection greeting
 
-1. User clicks another session in sidebar
-2. `App.jsx` calls `execute('get_session', { id })`
-3. Server responds with `command_result` containing session data + messages
-4. `handleCommandResult('get_session')`:
-   - Saves current session's messages + CWD to cache
-   - Loads target session's messages (from cache if available, else from server)
-   - Restores target session's CWD
-5. UI updates: `messages` and `cwd` reactively change
+Sent immediately after WebSocket handshake. Replaces the old `list_sessions` dance.
 
-### Delete Session Flow
+```json
+{
+  "type": "welcome",
+  "namespace": "default",
+  "sessions": [
+    {"id": "<uuid>", "short_id": "a1b2c3d4", "name": "Bug hunt", "model": "deepseek", "message_count": 42, "in_flight": true}
+  ]
+}
+```
 
-1. User clicks delete icon → confirmation dialog shown
-2. On confirm, calls `execute('session_delete', { id })`
-3. Server responds, store removes session from list and cleans up caches
+**Auto-subscribe**: Server subscribes client to the in_flight session (or most recent). No extra round trips.
+
+#### `type: "delta"` — Streaming text chunk
+
+```json
+{"type":"delta", "session_id":"<uuid>", "text":"Hel"}
+{"type":"delta", "session_id":"<uuid>", "text":"lo!"}
+```
+
+#### `type: "output"` — Full non-stream reply
+
+```json
+{"type":"output", "session_id":"<uuid>", "text":"Hello!"}
+```
+
+Emitted exactly once, before `"done"`, when the client did not request streaming.
+
+#### `type: "tool"` — Tool lifecycle
+
+Every tool call has a unique `id` that correlates `start` with `ok`/`err`.
+
+**Start:**
+```json
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"start", "args":{"path":"README.md"}, "snippet":"read_file 'README.md'"}
+```
+
+**Success:**
+```json
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"ok", "result":"file content..."}
+```
+
+**Error:**
+```json
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"err", "error":"file not found"}
+```
+
+#### `type: "usage"` — Token usage after each LLM call
+
+```json
+{
+  "type": "usage",
+  "session_id": "<uuid>",
+  "prompt_tokens": 1234,
+  "completion_tokens": 56,
+  "total_tokens": 1290,
+  "estimated_context_tokens": 52000,
+  "cost": 0.000095,
+  "total_cost": 0.000190
+}
+```
+
+#### `type: "done"` — Terminal frame
+
+**Success:**
+```json
+{"type":"done", "session_id":"<uuid>", "stats":{"total_tokens":1290, "total_cost":0.000190, "estimated_context_tokens":52000, "model":"deepseek"}}
+```
+
+**Error:**
+```json
+{"type":"done", "session_id":"<uuid>", "error":"something went wrong", "stats":{}}
+```
+
+**Cancelled:**
+```json
+{"type":"done", "session_id":"<uuid>", "cancelled":true, "stats":{}}
+```
+
+#### `type: "req"` — Server requests client action
+
+```json
+{"type":"req", "session_id":"<uuid>", "request_id":"req-1", "command":"return vim.api.nvim_buf_get_name(0)"}
+```
+
+Client must reply with `{"type":"resp","request_id":"...","error":"unsupported"}`.
+
+#### `type: "result"` — Command output
+
+```json
+{"type":"result", "session_id":"<uuid>", "cmd":"session_list", "data":{"sessions":[...]}}
+{"type":"result", "session_id":"<uuid>", "cmd":"model_list", "data":{"models":[...]}}
+```
+
+#### `type: "session"` — Session lifecycle event
+
+```json
+{"type":"session", "session_id":"<uuid>", "event":"created", "name":"", "model":"deepseek", "message_count":0}
+{"type":"session", "session_id":"<uuid>", "event":"renamed", "old_name":"Bug hunt", "name":"Bug investigation"}
+{"type":"session", "session_id":"<uuid>", "event":"deleted"}
+```
+
+When switching to a session, the server sends session data with messages at the top level:
+
+```json
+{"type":"session", "session_id":"<uuid>", "session":{"id":"<uuid>","name":"Chat","model":"deepseek"}, "messages":[{"role":"user","content":"Hello"}]}
+```
+
+- The `session` object contains session metadata, `messages` contains message history.
+- The client caches the previous session's messages, switches to the new session, and renders its messages.
+
+#### `type: "error"` — Error before any turn started
+
+```json
+{"type":"error", "session_id":"<uuid>", "error":"tool not found: unknown_tool"}
+```
+
+Terminal — no `done` frame follows.
 
 ---
 
-## CSS Architecture
+## Changes from v1 Protocol
+
+| v1 | v2 |
+|---|---|
+| Client sends `session_list` on connect | Server pushes `welcome` frame on connect |
+| No `type` discriminant on frames | Every frame has mandatory `type` field |
+| `event` field overloaded (tool, meta, command_result, etc.) | Consistent `type` system |
+| `done:true` as boolean flag | `done` is its own terminal frame type |
+| `cwd` in chat payload | `cwd` removed from wire protocol (stored server-side) |
+| Tool frames matched by `(tool, exec_snippet, status='start')` | Matched by unique `id` field |
+| `estimated_context_tokens` as separate meta event | Merged into `type:"usage"` and `done.stats` |
+| `event:"cancel"` as push event | Replaced by `type:"done"` with `cancelled:true` |
 
 File: `src/App.css` — single stylesheet (no CSS modules)
 

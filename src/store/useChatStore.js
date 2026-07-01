@@ -1,10 +1,21 @@
 import { create } from 'zustand'
 
 /**
- * Generate a unique message ID using crypto.randomUUID().
+ * Generate a unique message ID.
+ * Uses crypto.randomUUID() in secure contexts (HTTPS), falls back to
+ * crypto.getRandomValues() for HTTP (where randomUUID is not available).
  */
 function genId() {
-  return crypto.randomUUID()
+  if (typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID()
+  }
+  // Fallback for insecure contexts (HTTP) — UUID v4 via getRandomValues
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  bytes[6] = (bytes[6] & 0x0f) | 0x40 // version 4
+  bytes[8] = (bytes[8] & 0x3f) | 0x80 // variant 10
+  const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+  return `${hex.slice(0,8)}-${hex.slice(8,12)}-${hex.slice(12,16)}-${hex.slice(16,20)}-${hex.slice(20)}`
 }
 
 /**
@@ -144,6 +155,120 @@ function normalizeMessages(rawMessages) {
 }
 
 /**
+ * Replay events array from get_session to produce normalized messages.
+ *
+ * Mirrors the live streaming code path (handleV2Frame) but synchronous —
+ * directly computes the messages array instead of calling store actions.
+ *
+ * Event types: chat, delta, tool (start/ok/err), usage, done.
+ *
+ * @param {Array} events - Array of typed event objects
+ * @returns {Array} Normalized messages array (same format as normalizeMessages)
+ */
+export function replayEvents(events) {
+  const result = []
+  let currentAssistant = null
+
+  for (const event of events || []) {
+    switch (event.type) {
+      case 'chat': {
+        const msg = {
+          id: genId(),
+          role: 'user',
+          content: event.text || '',
+          timestamp: Date.now(),
+        }
+        const last = result[result.length - 1]
+        if (last && last.role === 'user') {
+          last.content += (last.content ? '\n' : '') + msg.content
+        } else {
+          result.push(msg)
+        }
+        currentAssistant = null
+        break
+      }
+
+      case 'delta': {
+        if (!currentAssistant) {
+          currentAssistant = {
+            id: genId(),
+            role: 'assistant',
+            content: '',
+            toolCalls: [],
+            timestamp: Date.now(),
+          }
+          result.push(currentAssistant)
+        }
+        currentAssistant.content += (event.text || '')
+        break
+      }
+
+      case 'tool': {
+        if (!currentAssistant) {
+          currentAssistant = {
+            id: genId(),
+            role: 'assistant',
+            content: '',
+            toolCalls: [],
+            timestamp: Date.now(),
+          }
+          result.push(currentAssistant)
+        }
+        const toolCalls = currentAssistant.toolCalls
+
+        if (event.status === 'start') {
+          const entry = {
+            tool: event.tool,
+            status: 'start',
+            args: event.args,
+            exec_snippet: event.snippet,
+            tool_call_id: event.id,
+            data: undefined,
+            result: undefined,
+            error: undefined,
+            id: genId(),
+            timestamp: Date.now(),
+          }
+          toolCalls.push(entry)
+          currentAssistant.content += toolMarker(toolCalls.length - 1)
+        } else {
+          // Match by id (tool_call_id)
+          const existingIdx = event.id
+            ? toolCalls.findLastIndex((tc) => tc.tool_call_id === event.id)
+            : -1
+          if (existingIdx >= 0) {
+            // Only update fields that change on ok/err — preserve args, snippet, tool_call_id from start
+            toolCalls[existingIdx] = {
+              ...toolCalls[existingIdx],
+              status: event.status || 'ok',
+              result: event.result,
+              error: event.error,
+              data: event.result || event.error
+                ? { result: event.result, error: event.error }
+                : undefined,
+            }
+          }
+        }
+        break
+      }
+
+      case 'usage':
+        // Tokens/cost are tracked per-session in the store, not in messages array.
+        // The caller extracts usage from events separately.
+        break
+
+      case 'done':
+        // Bare done — no text or stats. Just reset current assistant tracker
+        // so subsequent chat/delta events create new messages.
+        currentAssistant = null
+        break
+    }
+  }
+
+  return result
+}
+
+/**
  * Sort sessions by updated_at descending (most recent first).
  * Sessions without updated_at are placed at the end.
  */
@@ -154,11 +279,32 @@ function normalizeMessages(rawMessages) {
 function sortSessionsByUpdated(sessions) {
   if (!sessions) return sessions
   return [...sessions].sort((a, b) => {
-    if (!a.updated_at && !b.updated_at) return 0
+    // Sessions without updated_at go first (newly created / never updated)
+    if (!a.updated_at && !b.updated_at) {
+      // Tiebreaker for sessions without dates
+      return tiebreak(a, b)
+    }
     if (!a.updated_at) return -1
     if (!b.updated_at) return 1
-    return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    // Both have updated_at — compare descending
+    const diff = new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime()
+    if (diff !== 0) return diff
+    return tiebreak(a, b)
   })
+}
+
+/** Deterministic tiebreaker for sessions with equal sort keys. */
+function tiebreak(a, b) {
+  // message_count descending
+  if ((a.message_count || 0) !== (b.message_count || 0)) {
+    return (b.message_count || 0) - (a.message_count || 0)
+  }
+  // name ascending
+  const aName = a.name || a.short_id || a.id || ''
+  const bName = b.name || b.short_id || b.id || ''
+  if (aName !== bName) return aName.localeCompare(bName)
+  // id ascending (final tiebreaker)
+  return (a.id || '').localeCompare(b.id || '')
 }
 
 /**
@@ -241,6 +387,21 @@ function savePrompts(prompts) {
 }
 
 /**
+ * Bump updated_at on a session to now, then re-sort the session list.
+ * Call from actions that modify messages for a session.
+ */
+function touchSession(state, sessionId) {
+  if (!sessionId) return {}
+  return {
+    sessions: sortSessionsByUpdated(
+      state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, updated_at: new Date().toISOString() } : s
+      )
+    ),
+  }
+}
+
+/**
  * Chat store — manages messages per session, connection state, streaming,
  * session, session list, and config.
  */
@@ -251,6 +412,7 @@ export const useChatStore = create((set, get) => ({
   sessionStatus: {},
   sessionCwds: {},
   sessionEstimatedTokens: {},
+  sessionTotalCost: {},
   sessionUnread: {},
   sessionId: null,
   connectionStatus: 'disconnected',
@@ -314,6 +476,7 @@ export const useChatStore = create((set, get) => ({
       }
       return {
         ...setSessionMsgs(state, sessionId, updated),
+        ...touchSession(state, sessionId || state.sessionId),
         error: null,
       }
     })
@@ -332,6 +495,7 @@ export const useChatStore = create((set, get) => ({
           ...state.sessionStatus,
           [sessionId || state.sessionId]: 'streaming',
         },
+        ...touchSession(state, sessionId || state.sessionId),
       })
       return last
     }
@@ -349,6 +513,7 @@ export const useChatStore = create((set, get) => ({
       isStreaming: !sessionId || sessionId === state.sessionId,
       isCancelling: false,
       sessionStatus: { ...state.sessionStatus, [sid]: 'streaming' },
+      ...touchSession(state, sid),
       sessionUnread: isBackground
         ? { ...state.sessionUnread, [sid]: true }
         : state.sessionUnread,
@@ -367,6 +532,7 @@ export const useChatStore = create((set, get) => ({
       const isBackground = sessionId && sessionId !== state.sessionId
       return {
         ...setSessionMsgs(state, sessionId, msgs),
+        ...touchSession(state, sessionId || state.sessionId),
         sessionUnread: isBackground
           ? { ...state.sessionUnread, [sessionId]: true }
           : state.sessionUnread,
@@ -383,6 +549,7 @@ export const useChatStore = create((set, get) => ({
         isStreaming: isActive ? false : state.isStreaming,
         isCancelling: isActive ? false : state.isCancelling,
         sessionStatus: { ...state.sessionStatus, [sid]: 'idle' },
+        ...touchSession(state, sid),
         sessionUnread: isBackground
           ? { ...state.sessionUnread, [sid]: true }
           : state.sessionUnread,
@@ -430,18 +597,23 @@ export const useChatStore = create((set, get) => ({
         toolCalls.push(entry)
         last.content += toolMarker(toolCalls.length - 1)
       } else {
-        const existingIdx = event.exec_snippet
+        // Match by tool_call_id (v2: unique id per tool call), then by snippet+name
+        const existingIdx = event.tool_call_id
           ? toolCalls.findLastIndex(
-              (tc) =>
-                tc.tool === event.tool &&
-                tc.exec_snippet === event.exec_snippet &&
-                tc.status === 'start'
+              (tc) => tc.tool_call_id === event.tool_call_id
             )
-          : toolCalls.findLastIndex(
-              (tc) => tc.tool === event.tool && tc.status === 'start'
-            )
+          : event.exec_snippet
+            ? toolCalls.findLastIndex(
+                (tc) =>
+                  tc.tool === event.tool &&
+                  tc.exec_snippet === event.exec_snippet &&
+                  tc.status === 'start'
+              )
+            : toolCalls.findLastIndex(
+                (tc) => tc.tool === event.tool && tc.status === 'start'
+              )
         if (existingIdx >= 0) {
-          toolCalls[existingIdx] = { ...toolCalls[existingIdx], ...entry, id: toolCalls[existingIdx].id }
+          toolCalls[existingIdx] = { ...toolCalls[existingIdx], status: entry.status, result: entry.result, error: entry.error, data: entry.data }
         } else {
           toolCalls.push(entry)
         }
@@ -451,6 +623,7 @@ export const useChatStore = create((set, get) => ({
       const isBackground = sessionId && sessionId !== state.sessionId
       return {
         ...setSessionMsgs(state, sessionId, msgs),
+        ...touchSession(state, sessionId || state.sessionId),
         sessionUnread: isBackground
           ? { ...state.sessionUnread, [sessionId]: true }
           : state.sessionUnread,
@@ -530,26 +703,69 @@ export const useChatStore = create((set, get) => ({
             if (oldId && state.sessionEstimatedTokens[state.sessionId] !== undefined) {
               newSessionTokens[oldId] = state.sessionEstimatedTokens[state.sessionId]
             }
+            const newSessionCosts = { ...state.sessionTotalCost }
+            if (oldId && state.sessionTotalCost[state.sessionId] !== undefined) {
+              newSessionCosts[oldId] = state.sessionTotalCost[state.sessionId]
+            }
             const targetId = data.session.id
             const cached = newSessionMessages[targetId]
-            const targetMessages = cached || normalizeMessages(data.messages)
-            const targetCwd = newSessionCwds[targetId] || data.session.client_cwd || state.cwd
+            let targetMessages
+            let isInFlight = false
+            if (data.events && !cached) {
+              targetMessages = replayEvents(data.events)
+              // Detect in-flight session: events array doesn't end with {"type":"done"}
+              const lastEvent = data.events[data.events.length - 1]
+              isInFlight = !(lastEvent && lastEvent.type === 'done')
+            } else {
+              targetMessages = cached || normalizeMessages(data.messages)
+            }
+            // Always extract token/cost data from usage events when events are available,
+            // even if the session is cached. This ensures tokens/cost are populated
+            // when switching to a cached session that didn't have them stored yet.
+            if (data.events) {
+              for (const event of data.events) {
+                if (event.type === 'usage') {
+                  if (event.estimated_context_tokens !== undefined) {
+                    newSessionTokens[targetId] = event.estimated_context_tokens
+                  }
+                  if (event.total_cost !== undefined) {
+                    newSessionCosts[targetId] = event.total_cost
+                  }
+                }
+              }
+            }
+            // Also extract token/cost data from the session object itself,
+            // in case the server includes it directly (e.g. from session_info
+            // data or enriched session metadata).
+            const sess = data.session
+            if (sess.estimated_context_tokens !== undefined) {
+              newSessionTokens[targetId] = sess.estimated_context_tokens
+            }
+            if (sess.total_cost !== undefined) {
+              newSessionCosts[targetId] = sess.total_cost
+            }
+            const targetCwd = data.session.client_cwd || newSessionCwds[targetId] || state.cwd
             const newSessions = state.sessions.some(s => s.id === targetId)
-              ? state.sessions
+              ? sortSessionsByUpdated(state.sessions.map(s => s.id === targetId ? { ...s, ...data.session } : s))
               : sortSessionsByUpdated([...state.sessions, data.session])
             const newUnread = { ...state.sessionUnread }
             delete newUnread[targetId]
-            return {
+            const result = {
               sessionId: targetId,
               messages: targetMessages,
               sessionMessages: newSessionMessages,
               sessionCwds: newSessionCwds,
               sessionEstimatedTokens: newSessionTokens,
+              sessionTotalCost: newSessionCosts,
               sessions: newSessions,
               cwd: targetCwd,
-              isStreaming: state.sessionStatus[targetId] === 'streaming',
+              isStreaming: state.sessionStatus[targetId] === 'streaming' || isInFlight,
               sessionUnread: newUnread,
             }
+            if (isInFlight) {
+              result.sessionStatus = { ...state.sessionStatus, [targetId]: 'streaming' }
+            }
+            return result
           })
         }
         break
@@ -564,6 +780,8 @@ export const useChatStore = create((set, get) => ({
             delete newSessionCwds[data.deleted]
             const newSessionTokens = { ...state.sessionEstimatedTokens }
             delete newSessionTokens[data.deleted]
+            const newSessionCosts = { ...state.sessionTotalCost }
+            delete newSessionCosts[data.deleted]
             const newUnread = { ...state.sessionUnread }
             delete newUnread[data.deleted]
             return {
@@ -574,6 +792,7 @@ export const useChatStore = create((set, get) => ({
               sessionStatus: newSessionStatus,
               sessionCwds: newSessionCwds,
               sessionEstimatedTokens: newSessionTokens,
+              sessionTotalCost: newSessionCosts,
               sessionUnread: newUnread,
             }
           })
@@ -581,21 +800,35 @@ export const useChatStore = create((set, get) => ({
         break
       case 'session_info':
         if (data.session) {
-          set((state) => ({
-            sessions: state.sessions.map(s =>
-              s.id === data.session.id ? { ...s, ...data.session } : s
-            ),
-            cwd: data.session.client_cwd || state.cwd,
-          }))
+          set((state) => {
+            const serverCwd = data.session.client_cwd
+            const sid = data._frameSessionId || state.sessionId
+            const sess = data.session
+            return {
+              sessions: sortSessionsByUpdated(state.sessions.map(s =>
+                s.id === sess.id ? { ...s, ...sess } : s
+              )),
+              cwd: serverCwd || state.cwd,
+              sessionCwds: sid && serverCwd
+                ? { ...state.sessionCwds, [sid]: serverCwd }
+                : state.sessionCwds,
+              sessionEstimatedTokens: sess.estimated_context_tokens !== undefined
+                ? { ...state.sessionEstimatedTokens, [sess.id]: sess.estimated_context_tokens }
+                : state.sessionEstimatedTokens,
+              sessionTotalCost: sess.total_cost !== undefined
+                ? { ...state.sessionTotalCost, [sess.id]: sess.total_cost }
+                : state.sessionTotalCost,
+            }
+          })
         }
         break
       case 'session_rename':
       case 'session_autorename':
         if (data.session) {
           set((state) => ({
-            sessions: state.sessions.map(s =>
+            sessions: sortSessionsByUpdated(state.sessions.map(s =>
               s.id === data.session.id ? { ...s, name: data.session.name } : s
-            ),
+            )),
           }))
         }
         break
@@ -657,7 +890,15 @@ export const useChatStore = create((set, get) => ({
         break
       case 'cwd_set':
         if (data.cwd) {
-          set({ cwd: data.cwd })
+          set((state) => {
+            const sid = data._frameSessionId || state.sessionId
+            return {
+              cwd: data.cwd,
+              sessionCwds: sid
+                ? { ...state.sessionCwds, [sid]: data.cwd }
+                : state.sessionCwds,
+            }
+          })
         }
         break
     }
@@ -686,6 +927,23 @@ export const useChatStore = create((set, get) => ({
       },
     }))
   },
+  /** Set total cost for a session. */
+  setTotalCost: (cost, sessionId) => {
+    set((state) => ({
+      sessionTotalCost: {
+        ...state.sessionTotalCost,
+        [sessionId || state.sessionId]: cost,
+      },
+    }))
+  },
+  /** Set model name for a session in the sessions list. */
+  setModel: (sessionId, model) => {
+    set((state) => ({
+      sessions: sortSessionsByUpdated(state.sessions.map((s) =>
+        s.id === sessionId ? { ...s, model } : s
+      )),
+    }))
+  },
   clearMessages: () => set({ messages: [] }),
   /** Set isStreaming without creating a message (for immediate Cancel button). */
   setStreaming: (val) => set({ isStreaming: val }),
@@ -695,9 +953,9 @@ export const useChatStore = create((set, get) => ({
 
   handleSessionRenamed: (sessionId, newName) => {
     set((state) => ({
-      sessions: state.sessions.map((s) =>
+      sessions: sortSessionsByUpdated(state.sessions.map((s) =>
         s.id === sessionId ? { ...s, name: newName } : s
-      ),
+      )),
     }))
   },
 

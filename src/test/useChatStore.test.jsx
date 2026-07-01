@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { useChatStore } from '../store/useChatStore'
+import { useChatStore, replayEvents } from '../store/useChatStore'
 
 describe('useChatStore', () => {
   beforeEach(() => {
@@ -10,6 +10,7 @@ describe('useChatStore', () => {
       sessionMessages: {},
       sessionStatus: {},
       sessionEstimatedTokens: {},
+      sessionTotalCost: {},
       sessionUnread: {},
       connectionStatus: 'disconnected',
       isStreaming: false,
@@ -79,12 +80,16 @@ describe('useChatStore', () => {
   it('should merge tool events by tool name', () => {
     useChatStore.getState().sendMessage('Do')
     useChatStore.getState().startAssistantMessage()
-    useChatStore.getState().addToolEvent({ tool: 'shell', status: 'start', exec_snippet: 'curl wttr.in' })
-    useChatStore.getState().addToolEvent({ tool: 'shell', status: 'ok' })
+    useChatStore.getState().addToolEvent({ tool: 'shell', status: 'start', exec_snippet: 'curl wttr.in', args: { url: 'wttr.in' }, tool_call_id: 'call_001' })
+    useChatStore.getState().addToolEvent({ tool: 'shell', status: 'ok', tool_call_id: 'call_001', result: 'Weather data' })
     useChatStore.getState().finalizeMessage()
     const toolCalls = useChatStore.getState().messages[1].toolCalls
     expect(toolCalls).toHaveLength(1)
     expect(toolCalls[0].status).toBe('ok')
+    expect(toolCalls[0].args).toEqual({ url: 'wttr.in' })
+    expect(toolCalls[0].result).toBe('Weather data')
+    expect(toolCalls[0].exec_snippet).toBe('curl wttr.in')
+    expect(toolCalls[0].tool_call_id).toBe('call_001')
   })
 
   it('should embed tool marker in content on addToolEvent start', () => {
@@ -140,6 +145,7 @@ describe('useChatStore', () => {
       messages: [],
     })
     expect(useChatStore.getState().sessionId).toBe('switched')
+    // Should preserve the current cwd when neither server nor cache provides one
     expect(useChatStore.getState().cwd).toBe('/my/current/dir')
   })
 
@@ -600,6 +606,25 @@ describe('useChatStore', () => {
     expect(sessions[1].id).toBe('has-date')
   })
 
+  it('should use deterministic tiebreaker for sessions without updated_at', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_list', {
+      sessions: [
+        { id: 'c', name: 'Gamma' },
+        { id: 'a', name: 'Alpha' },
+        { id: 'b', name: 'Beta' },
+        { id: 'd', name: 'Gamma', message_count: 5 },
+      ],
+    })
+    const sessions = useChatStore.getState().sessions
+    expect(sessions).toHaveLength(4)
+    // All without updated_at — tiebreak by message_count desc, then name, then id
+    expect(sessions[0].id).toBe('d')  // message_count=5, highest
+    expect(sessions[1].id).toBe('a')  // Alpha
+    expect(sessions[2].id).toBe('b')  // Beta
+    expect(sessions[3].id).toBe('c')  // Gamma (same name as d, but d has higher message_count)
+  })
+
   it('should keep sessions sorted after session_create adds a new one', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_list', {
@@ -986,6 +1011,87 @@ describe('useChatStore', () => {
     expect(useChatStore.getState().sessionEstimatedTokens['sess-b']).toBe(200)
   })
 
+  it('should extract estimated context tokens from usage events in get_session events', () => {
+    const store = useChatStore.getState()
+
+    // Switch to a session that has events with usage data
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-events', name: 'Events Session', model: 'gpt-4o' },
+      events: [
+        { type: 'chat', text: 'Hello' },
+        { type: 'delta', text: 'Hi there' },
+        {
+          type: 'usage',
+          estimated_context_tokens: 42000,
+          total_cost: 0.00150,
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          cost: 0.00050,
+        },
+        { type: 'done' },
+      ],
+    })
+
+    const state = useChatStore.getState()
+    expect(state.sessionId).toBe('sess-events')
+    expect(state.messages).toHaveLength(2)
+    // Tokens and cost should be extracted from the usage event
+    expect(state.sessionEstimatedTokens['sess-events']).toBe(42000)
+    expect(state.sessionTotalCost['sess-events']).toBe(0.00150)
+  })
+
+  it('should extract total_cost from the LAST usage event in get_session events (cumulative)', () => {
+    const store = useChatStore.getState()
+
+    // Multiple usage events — the last one has the cumulative total_cost
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-multi-usage' },
+      events: [
+        { type: 'chat', text: 'Do two things' },
+        { type: 'delta', text: 'First...' },
+        { type: 'tool', id: 'c1', tool: 'read_file', status: 'start', args: { path: 'a.txt' }, snippet: "read_file 'a.txt'" },
+        { type: 'tool', id: 'c1', tool: 'read_file', status: 'ok', result: 'data' },
+        { type: 'usage', estimated_context_tokens: 10000, total_cost: 0.00050, total_tokens: 50 },
+        { type: 'delta', text: 'Second...' },
+        { type: 'tool', id: 'c2', tool: 'shell', status: 'start', args: { command: 'ls' }, snippet: 'ls' },
+        { type: 'tool', id: 'c2', tool: 'shell', status: 'ok', result: 'files' },
+        { type: 'usage', estimated_context_tokens: 20000, total_cost: 0.00100, total_tokens: 100 },
+        { type: 'done' },
+      ],
+    })
+
+    const state = useChatStore.getState()
+    // Should have the LAST usage event's values (cumulative totals)
+    expect(state.sessionEstimatedTokens['sess-multi-usage']).toBe(20000)
+    expect(state.sessionTotalCost['sess-multi-usage']).toBe(0.00100)
+  })
+
+  it('should preserve existing tokens/cost when get_session events have no usage events', () => {
+    const store = useChatStore.getState()
+
+    // First, set some tokens for sess-no-usage
+    useChatStore.setState({
+      sessionEstimatedTokens: { 'sess-no-usage': 5000 },
+      sessionTotalCost: { 'sess-no-usage': 0.25 },
+    })
+
+    // Switch to sess-no-usage with events that have NO usage
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-no-usage' },
+      events: [
+        { type: 'chat', text: 'Hi' },
+        { type: 'delta', text: 'Hello' },
+        { type: 'done' },
+      ],
+    })
+
+    const state = useChatStore.getState()
+    // Existing tokens should be preserved
+    expect(state.sessionEstimatedTokens['sess-no-usage']).toBe(5000)
+    expect(state.sessionTotalCost['sess-no-usage']).toBe(0.25)
+  })
+
   it('should clean up estimated context tokens on session_delete', () => {
     const store = useChatStore.getState()
     store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
@@ -994,5 +1100,418 @@ describe('useChatStore', () => {
     store.handleCommandResult('session_delete', { deleted: 'sess-a', active_cleared: true })
 
     expect(useChatStore.getState().sessionEstimatedTokens['sess-a']).toBeUndefined()
+  })
+
+  // --- Total Cost ---
+
+  it('should start with sessionTotalCost as empty map', () => {
+    expect(useChatStore.getState().sessionTotalCost).toEqual({})
+  })
+
+  it('should set total cost per session', () => {
+    const store = useChatStore.getState()
+    store.setTotalCost(1.50, 'session-1')
+    expect(useChatStore.getState().sessionTotalCost['session-1']).toBe(1.50)
+  })
+
+  it('should set total cost for active session when sessionId omitted', () => {
+    useChatStore.setState({ sessionId: 'sess-active' })
+    const store = useChatStore.getState()
+    store.setTotalCost(0.75)
+    expect(useChatStore.getState().sessionTotalCost['sess-active']).toBe(0.75)
+  })
+
+  it('should set total cost to 0', () => {
+    const store = useChatStore.getState()
+    store.setTotalCost(0, 'session-1')
+    expect(useChatStore.getState().sessionTotalCost['session-1']).toBe(0)
+  })
+
+  it('should preserve total cost across session switch', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setTotalCost(0.25, 'sess-a')
+
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+    store.setTotalCost(0.75, 'sess-b')
+
+    store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
+
+    expect(useChatStore.getState().sessionTotalCost['sess-a']).toBe(0.25)
+    expect(useChatStore.getState().sessionTotalCost['sess-b']).toBe(0.75)
+  })
+
+  it('should clean up total cost on session_delete', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setTotalCost(0.50, 'sess-a')
+
+    store.handleCommandResult('session_delete', { deleted: 'sess-a', active_cleared: true })
+
+    expect(useChatStore.getState().sessionTotalCost['sess-a']).toBeUndefined()
+  })
+
+  // --- get_session preserves model in sessions list ---
+
+  it('should preserve model from get_session when session already exists in list', () => {
+    // Simulate initial session_list response (no model field)
+    useChatStore.getState().handleCommandResult('session_list', {
+      sessions: [
+        { id: 'sess-1', short_id: 'sess-1', name: 'Chat 1' },
+      ],
+    })
+
+    // Now get_session returns the session WITH a model field
+    useChatStore.getState().handleCommandResult('get_session', {
+      session: { id: 'sess-1', name: 'Chat 1', model: 'gpt-4o' },
+      messages: [{ role: 'user', content: 'Hello' }],
+    })
+
+    const sessions = useChatStore.getState().sessions
+    const session = sessions.find(s => s.id === 'sess-1')
+    expect(session).toBeDefined()
+    expect(session.model).toBe('gpt-4o')
+  })
+
+  it('should preserve model from get_session even when session is new (not in list)', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-new', name: 'New Chat', model: 'claude-3.5' },
+      messages: [],
+    })
+
+    const sessions = useChatStore.getState().sessions
+    const session = sessions.find(s => s.id === 'sess-new')
+    expect(session).toBeDefined()
+    expect(session.model).toBe('claude-3.5')
+  })
+
+  it('should update model in sessions list when get_session returns updated data', () => {
+    // Start with a session that has no model
+    useChatStore.getState().handleCommandResult('session_list', {
+      sessions: [
+        { id: 'sess-1', short_id: 'sess-1', name: 'Chat 1' },
+      ],
+    })
+
+    // First get_session without model
+    useChatStore.getState().handleCommandResult('get_session', {
+      session: { id: 'sess-1', name: 'Chat 1' },
+      messages: [],
+    })
+
+    // Later get_session with model (server has updated info)
+    useChatStore.getState().handleCommandResult('get_session', {
+      session: { id: 'sess-1', name: 'Chat 1', model: 'gpt-4o-mini' },
+      messages: [],
+    })
+
+    const sessions = useChatStore.getState().sessions
+    const session = sessions.find(s => s.id === 'sess-1')
+    expect(session.model).toBe('gpt-4o-mini')
+  })
+
+  // --- CWD fixes: server is source of truth, sessionCwds cache must stay in sync ---
+
+  it('should prefer server client_cwd over cached cwd in get_session', () => {
+    const store = useChatStore.getState()
+    // Start with session A, set its CWD via setCwd (cached)
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setCwd('/local/cached/path')
+
+    // Switch to session B which has server client_cwd
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-b', client_cwd: '/server/path' },
+      messages: [],
+    })
+
+    // Server client_cwd should win over any local cache
+    expect(useChatStore.getState().cwd).toBe('/server/path')
+  })
+
+  it('should use cached cwd when server does not provide client_cwd and session was visited before', () => {
+    const store = useChatStore.getState()
+    // Create session A and set its CWD
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setCwd('/cached/path')
+
+    // Switch away to B
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+
+    // Switch back to A — server provides no client_cwd, should use cached
+    store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
+
+    expect(useChatStore.getState().cwd).toBe('/cached/path')
+  })
+
+  it('should cwd_set handler update both global cwd and sessionCwds cache', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+
+    // Set CWD via server command result (simulating /cwd response)
+    store.handleCommandResult('cwd_set', { cwd: '/confirmed/path' })
+
+    const state = useChatStore.getState()
+    expect(state.cwd).toBe('/confirmed/path')
+    expect(state.sessionCwds['sess-a']).toBe('/confirmed/path')
+  })
+
+  it('should session_info handler update both global cwd and sessionCwds cache', () => {
+    const store = useChatStore.getState()
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+
+    // Simulate session_info response with client_cwd (result frame carries session_id)
+    store.handleCommandResult('session_info', {
+      session: { id: 'sess-a', client_cwd: '/info/path' },
+      _frameSessionId: 'sess-a',
+    })
+
+    const state = useChatStore.getState()
+    expect(state.cwd).toBe('/info/path')
+    expect(state.sessionCwds['sess-a']).toBe('/info/path')
+  })
+
+  it('should preserve cwd across session switch and back when server always provides client_cwd', () => {
+    const store = useChatStore.getState()
+
+    // Create session A with server-provided CWD
+    store.handleCommandResult('session_create', { session: { id: 'sess-a', client_cwd: '/a/path' } })
+
+    // Switch to session B with server-provided CWD
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-b', client_cwd: '/b/path' },
+      messages: [],
+    })
+    expect(useChatStore.getState().cwd).toBe('/b/path')
+
+    // Switch back to A — should get /a/path from server (authoritative)
+    store.handleCommandResult('get_session', {
+      session: { id: 'sess-a', client_cwd: '/a/path' },
+      messages: [],
+    })
+    expect(useChatStore.getState().cwd).toBe('/a/path')
+  })
+
+  it('should use cached cwd when switching back after cwd_set updated it', () => {
+    const store = useChatStore.getState()
+
+    // Create session A
+    store.handleCommandResult('session_create', { session: { id: 'sess-a' } })
+    store.setCwd('/initial/a')
+
+    // Switch to B
+    store.handleCommandResult('get_session', { session: { id: 'sess-b' }, messages: [] })
+
+    // Server confirms CWD change for A (result frame carries session_id: 'sess-a')
+    store.handleCommandResult('cwd_set', { cwd: '/updated/a', _frameSessionId: 'sess-a' })
+
+    // Now sessionCwds['sess-a'] should be '/updated/a'
+    expect(useChatStore.getState().sessionCwds['sess-a']).toBe('/updated/a')
+
+    // Switch back to A — should use the cache since server provides no client_cwd
+    store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
+    expect(useChatStore.getState().cwd).toBe('/updated/a')
+  })
+})
+
+describe('replayEvents', () => {
+  it('should convert chat event to user message', () => {
+    const result = replayEvents([{ type: 'chat', text: 'Hello!' }])
+    expect(result).toHaveLength(1)
+    expect(result[0].role).toBe('user')
+    expect(result[0].content).toBe('Hello!')
+  })
+
+  it('should convert delta events to assistant message', () => {
+    const result = replayEvents([
+      { type: 'delta', text: 'Hello ' },
+      { type: 'delta', text: 'world' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].role).toBe('assistant')
+    expect(result[0].content).toBe('Hello world')
+  })
+
+  it('should handle chat + delta + done sequence', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Hi' },
+      { type: 'delta', text: 'Hello there' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[0].role).toBe('user')
+    expect(result[0].content).toBe('Hi')
+    expect(result[1].role).toBe('assistant')
+    expect(result[1].content).toBe('Hello there')
+  })
+
+  it('should merge consecutive chat events into one user message', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Part 1' },
+      { type: 'chat', text: 'Part 2' },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].content).toBe('Part 1\nPart 2')
+  })
+
+  it('should insert tool marker on tool start event', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Read file' },
+      { type: 'delta', text: 'Reading...' },
+      { type: 'tool', id: 'call_1', tool: 'read_file', status: 'start', args: { path: 'README.md' }, snippet: "read_file 'README.md'" },
+      { type: 'delta', text: ' Done' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].tool).toBe('read_file')
+    expect(result[1].toolCalls[0].status).toBe('start')
+    expect(result[1].toolCalls[0].tool_call_id).toBe('call_1')
+    expect(result[1].toolCalls[0].exec_snippet).toBe("read_file 'README.md'")
+    expect(result[1].toolCalls[0].args).toEqual({ path: 'README.md' })
+    expect(result[1].content).toContain('\x00TOOL:0\x00')
+  })
+
+  it('should update tool call status on tool ok event matching by id', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Do tools' },
+      { type: 'delta', text: 'Running...' },
+      { type: 'tool', id: 'call_1', tool: 'read_file', status: 'start', args: { path: '/tmp/x.txt' }, snippet: 'read_file' },
+      { type: 'tool', id: 'call_1', tool: 'read_file', status: 'ok', result: 'file content' },
+      { type: 'done' },
+    ])
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].status).toBe('ok')
+    expect(result[1].toolCalls[0].result).toBe('file content')
+    expect(result[1].toolCalls[0].data).toEqual({ result: 'file content', error: undefined })
+    expect(result[1].toolCalls[0].args).toEqual({ path: '/tmp/x.txt' })
+    expect(result[1].content).toContain('\x00TOOL:0\x00')
+  })
+
+  it('should update tool call status on tool err event matching by id', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Try' },
+      { type: 'delta', text: 'Attempting...' },
+      { type: 'tool', id: 'call_err', tool: 'read_file', status: 'start', args: { path: 'missing.txt' }, snippet: 'read_file' },
+      { type: 'tool', id: 'call_err', tool: 'read_file', status: 'err', error: 'not found' },
+      { type: 'done' },
+    ])
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].status).toBe('err')
+    expect(result[1].toolCalls[0].error).toBe('not found')
+    expect(result[1].toolCalls[0].data).toEqual({ result: undefined, error: 'not found' })
+    expect(result[1].toolCalls[0].args).toEqual({ path: 'missing.txt' })
+  })
+
+  it('should handle multiple concurrent tools with different ids', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Run both' },
+      { type: 'delta', text: 'Starting...' },
+      { type: 'tool', id: 'call_a', tool: 'read_file', status: 'start', args: { path: 'a.txt' }, snippet: "read_file 'a.txt'" },
+      { type: 'tool', id: 'call_b', tool: 'shell', status: 'start', args: { command: 'ls' }, snippet: 'ls -la' },
+      { type: 'tool', id: 'call_a', tool: 'read_file', status: 'ok', result: 'file a' },
+      { type: 'tool', id: 'call_b', tool: 'shell', status: 'err', error: 'permission denied' },
+      { type: 'delta', text: ' Done' },
+      { type: 'done' },
+    ])
+    expect(result[1].toolCalls).toHaveLength(2)
+    expect(result[1].toolCalls[0].tool).toBe('read_file')
+    expect(result[1].toolCalls[0].status).toBe('ok')
+    expect(result[1].toolCalls[0].args).toEqual({ path: 'a.txt' })
+    expect(result[1].toolCalls[0].result).toBe('file a')
+    expect(result[1].toolCalls[1].tool).toBe('shell')
+    expect(result[1].toolCalls[1].status).toBe('err')
+    expect(result[1].toolCalls[1].args).toEqual({ command: 'ls' })
+    expect(result[1].toolCalls[1].error).toBe('permission denied')
+    expect(result[1].content).toContain('\x00TOOL:0\x00')
+    expect(result[1].content).toContain('\x00TOOL:1\x00')
+  })
+
+  it('should handle bare done event (no text/stats)', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Hi' },
+      { type: 'delta', text: 'Bye' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].content).toBe('Bye')
+  })
+
+  it('should create assistant message when tool event arrives before any delta', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Run tool' },
+      { type: 'tool', id: 'c1', tool: 'shell', status: 'start', args: {}, snippet: 'ls' },
+      { type: 'tool', id: 'c1', tool: 'shell', status: 'ok', result: 'output' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].role).toBe('assistant')
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].status).toBe('ok')
+    expect(result[1].content).toContain('\x00TOOL:0\x00')
+  })
+
+  it('should handle usage events (not affecting messages)', () => {
+    // Usage events are informational; they don't add messages
+    const result = replayEvents([
+      { type: 'chat', text: 'Hi' },
+      { type: 'delta', text: 'Response' },
+      { type: 'usage', total_tokens: 100, estimated_context_tokens: 5000 },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[0].role).toBe('user')
+    expect(result[1].role).toBe('assistant')
+  })
+
+  it('should preserve assistant message when no done event (in-flight)', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Question' },
+      { type: 'delta', text: 'Partial answer...' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].content).toBe('Partial answer...')
+    // No done — message is left as-is (streaming state implied)
+  })
+
+  it('should always create new assistant message after done', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'First' },
+      { type: 'delta', text: 'Answer 1' },
+      { type: 'done' },
+      { type: 'chat', text: 'Second' },
+      { type: 'delta', text: 'Answer 2' },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(4)
+    expect(result[0].content).toBe('First')
+    expect(result[1].content).toBe('Answer 1')
+    expect(result[2].content).toBe('Second')
+    expect(result[3].content).toBe('Answer 2')
+  })
+
+  it('should handle full example from task.md', () => {
+    const events = [
+      { type: 'chat', text: 'Read README.md' },
+      { type: 'delta', text: 'Let me check...' },
+      { type: 'tool', id: 'call_1', tool: 'read_file', status: 'start', args: { path: 'README.md' }, snippet: "read_file 'README.md'" },
+      { type: 'tool', id: 'call_1', tool: 'read_file', status: 'ok', result: '# Hakka\n\nA Go framework...' },
+      { type: 'delta', text: "Here's what I found in README.md..." },
+      { type: 'usage', prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      { type: 'done' },
+    ]
+    const result = replayEvents(events)
+    expect(result).toHaveLength(2)
+    expect(result[0].role).toBe('user')
+    expect(result[0].content).toBe('Read README.md')
+    expect(result[1].role).toBe('assistant')
+    expect(result[1].content).toContain('Let me check...')
+    expect(result[1].content).toContain('\x00TOOL:0\x00')
+    expect(result[1].content).toContain("Here's what I found in README.md...")
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].tool).toBe('read_file')
+    expect(result[1].toolCalls[0].status).toBe('ok')
+    expect(result[1].toolCalls[0].tool_call_id).toBe('call_1')
   })
 })

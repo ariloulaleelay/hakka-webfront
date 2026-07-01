@@ -628,10 +628,30 @@
   flex-shrink: 0;
 }
 
+.tokens-bar__model {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+  font-size: 12px;
+  color: var(--accent);
+  white-space: nowrap;
+}
+
+.tokens-bar__sep {
+  font-size: 12px;
+  color: var(--text-muted);
+  margin: 0 2px;
+}
+
 .tokens-bar__count {
   font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
   font-size: 12px;
   color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.tokens-bar__cost {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', monospace;
+  font-size: 12px;
+  color: var(--success, #22c55e);
   white-space: nowrap;
 }
 

@@ -63,7 +63,7 @@ export function Sidebar({ onNewSession, onSwitchSession, onDeleteSession, onExec
   )
 
   const getSessionName = useCallback(
-    (s) => s.name || s.shortId || s.id.slice(0, 8),
+    (s) => s.name || s.shortId || s.short_id || s.id.slice(0, 8),
     []
   )
 

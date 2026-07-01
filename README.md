@@ -59,6 +59,8 @@ src/
 │   └── useChatStore.js         — Zustand store (messages, sessions, streaming, CWD per session)
 ├── hooks/
 │   └── useWebSocket.js         — WebSocket connection manager, frame routing
+├── utils/
+│   └── parseSlashCommand.js    — Slash command parser (client-side, never sent to LLM)
 ├── components/
 │   ├── ChatArea.jsx            — Message list with tool call interleaving
 │   ├── InputBar.jsx            — Text input with Send/Cancel buttons

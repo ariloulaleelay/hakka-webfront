@@ -3,18 +3,20 @@ import { renderHook, act } from '@testing-library/react'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { useChatStore } from '../store/useChatStore'
 
-describe('useWebSocket', () => {
+describe('useWebSocket v2 protocol', () => {
   beforeEach(() => {
     useChatStore.setState({
       messages: [],
       sessionId: null,
       sessionEstimatedTokens: {},
+      sessionTotalCost: {},
       connectionStatus: 'disconnected',
       isStreaming: false,
       isCancelling: false,
       error: null,
       cwd: null,
       models: [],
+      sessions: [],
     })
   })
 
@@ -28,8 +30,7 @@ describe('useWebSocket', () => {
     expect(typeof result.current.cancel).toBe('function')
   })
 
-  it('should send cwd in payload', async () => {
-    useChatStore.setState({ cwd: '/my/project' })
+  it('should send chat messages with type:"chat" and no cwd', async () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -42,10 +43,33 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
     const sendCalls = ws.send.mock.calls
-    const helloCall = sendCalls.find((c) => JSON.parse(c[0]).input === 'hello')
+    const helloCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.input === 'hello'
+    })
     expect(helloCall).toBeDefined()
     const sent = JSON.parse(helloCall[0])
-    expect(sent.cwd).toBe('/my/project')
+    expect(sent.type).toBe('chat')
+    expect(sent.input).toBe('hello')
+    // cwd should NOT be in the payload anymore
+    expect(sent.cwd).toBeUndefined()
+  })
+
+  it('should not send session_list on connect (server pushes welcome)', async () => {
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+    const sendCalls = ws.send.mock.calls
+    // No session_list command should be sent automatically
+    const sessionListCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'session_list'
+    })
+    expect(sessionListCall).toBeUndefined()
   })
 
   it('should add user message to store when sending', async () => {
@@ -81,8 +105,9 @@ describe('useWebSocket', () => {
     expect(useChatStore.getState().isStreaming).toBe(true)
   })
 
-  it('should clear isStreaming when streaming completes', async () => {
+  it('should clear isStreaming when done frame arrives', async () => {
     useChatStore.setState({
+      sessionId: 'sess-1',
       messages: [
         { id: 'user-1', role: 'user', content: 'Hello' },
       ],
@@ -100,16 +125,17 @@ describe('useWebSocket', () => {
     })
     expect(useChatStore.getState().isStreaming).toBe(true)
 
-    act(() => { ws.onmessage({ data: JSON.stringify({ delta: 'Hello' }) }) })
+    // v2: delta frame uses type and text
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'Hello' }) }) })
     expect(useChatStore.getState().isStreaming).toBe(true)
 
-    act(() => { ws.onmessage({ data: JSON.stringify({ done: true }) }) })
+    // v2: done is its own terminal frame
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: {} }) }) })
 
     expect(useChatStore.getState().isStreaming).toBe(false)
   })
 
-  it('should send structured command frames via execute (without cwd)', async () => {
-    useChatStore.setState({ cwd: '/my/project' })
+  it('should send structured command frames via execute with type:"cmd"', async () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -128,8 +154,10 @@ describe('useWebSocket', () => {
     })
     expect(execCall).toBeDefined()
     const sent = JSON.parse(execCall[0])
+    expect(sent.type).toBe('cmd')
     expect(sent.command.cmd).toBe('session_list')
     expect(sent.command.params).toEqual({})
+    // cwd should NOT be in command frames
     expect(sent.cwd).toBeUndefined()
   })
 
@@ -188,8 +216,8 @@ describe('useWebSocket', () => {
     expect(state.isCancelling).toBe(true)
   })
 
-  it('should handle cancel event response from server', async () => {
-    useChatStore.setState({ isStreaming: true, isCancelling: false })
+  it('should handle done frame with cancelled:true', async () => {
+    useChatStore.setState({ isStreaming: true, isCancelling: false, sessionId: 'sess-1' })
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -198,12 +226,14 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
+    // v2: cancel response is a done frame with cancelled:true
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'cancel',
+          type: 'done',
           session_id: 'sess-1',
-          data: { cancelled: true },
+          cancelled: true,
+          stats: {},
         }),
       })
     })
@@ -213,7 +243,7 @@ describe('useWebSocket', () => {
     expect(state.isStreaming).toBe(false)
   })
 
-  it('should extract estimated_context_tokens from meta events', async () => {
+  it('should extract usage data from usage frame', async () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -221,28 +251,36 @@ describe('useWebSocket', () => {
     })
 
     const ws = globalThis.WebSocket.instances.at(-1)
-    useChatStore.setState({ isStreaming: true, sessionId: 'sess-1' })
+    useChatStore.setState({ sessionId: 'sess-1' })
 
     expect(useChatStore.getState().sessionEstimatedTokens).toEqual({})
+    expect(useChatStore.getState().sessionTotalCost).toEqual({})
 
+    // v2: usage is a single frame with both token counts and cost
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'meta',
+          type: 'usage',
           session_id: 'sess-1',
-          data: { estimated_context_tokens: 12345 },
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
+          estimated_context_tokens: 12345,
+          cost: 0.0005,
+          total_cost: 1.50,
         }),
       })
     })
 
     const state = useChatStore.getState()
     expect(state.sessionEstimatedTokens['sess-1']).toBe(12345)
-    // Other state should be unchanged
-    expect(state.isStreaming).toBe(true)
+    expect(state.sessionTotalCost['sess-1']).toBe(1.50)
+    // isStreaming should be unchanged
+    expect(state.isStreaming).toBe(false)
     expect(state.error).toBeNull()
   })
 
-  it('should ignore other meta events (token usage without estimated_context_tokens)', async () => {
+  it('should handle usage frame without cost fields', async () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -250,27 +288,28 @@ describe('useWebSocket', () => {
     })
 
     const ws = globalThis.WebSocket.instances.at(-1)
-    useChatStore.setState({ isStreaming: true, sessionId: 'sess-1' })
-    useChatStore.getState().setEstimatedContextTokens(500, 'sess-1')
+    useChatStore.setState({ sessionId: 'sess-1' })
 
+    // usage without estimated_context_tokens and total_cost
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'meta',
+          type: 'usage',
           session_id: 'sess-1',
-          data: { prompt_tokens: 100, completion_tokens: 50, total_tokens: 150 },
+          prompt_tokens: 100,
+          completion_tokens: 50,
+          total_tokens: 150,
         }),
       })
     })
 
-    // sessionEstimatedTokens should remain unchanged
     const state = useChatStore.getState()
-    expect(state.sessionEstimatedTokens['sess-1']).toBe(500)
-    expect(state.isStreaming).toBe(true)
-    expect(state.error).toBeNull()
+    // Should not crash, values unchanged
+    expect(state.sessionEstimatedTokens).toEqual({})
+    expect(state.sessionTotalCost).toEqual({})
   })
 
-  it('should respond to vim_request with unsupported error', async () => {
+  it('should respond to req with resp unsupported', async () => {
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
 
     await act(async () => {
@@ -279,68 +318,33 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
+    // v2: client request is type:"req"
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'vim_request',
+          type: 'req',
           session_id: 'sess-1',
-          vim_request: {
-            request_id: 'req-123',
-            command: 'read_file',
-          },
+          request_id: 'req-123',
+          command: 'return vim.api.nvim_buf_get_name(0)',
         }),
       })
     })
 
-    // Should send a response with unsupported error
+    // Should send a resp with unsupported error
     const sendCalls = ws.send.mock.calls
     const responseCall = sendCalls.find((c) => {
       const p = JSON.parse(c[0])
-      return p.type === 'response' && p.request_id === 'req-123'
+      return p.type === 'resp' && p.request_id === 'req-123'
     })
     expect(responseCall).toBeDefined()
     const sent = JSON.parse(responseCall[0])
-    expect(sent.type).toBe('response')
+    expect(sent.type).toBe('resp')
     expect(sent.request_id).toBe('req-123')
     expect(sent.error).toBe('unsupported')
+    expect(sent.result).toBeUndefined()
   })
 
-  it('should respond to client_request with unsupported error', async () => {
-    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1))
-    })
-
-    const ws = globalThis.WebSocket.instances.at(-1)
-
-    act(() => {
-      ws.onmessage({
-        data: JSON.stringify({
-          event: 'client_request',
-          session_id: 'sess-1',
-          client_request: {
-            request_id: 'req-456',
-            action: 'nvim_exec',
-          },
-        }),
-      })
-    })
-
-    // Should send a response with unsupported error
-    const sendCalls = ws.send.mock.calls
-    const responseCall = sendCalls.find((c) => {
-      const p = JSON.parse(c[0])
-      return p.type === 'response' && p.request_id === 'req-456'
-    })
-    expect(responseCall).toBeDefined()
-    const sent = JSON.parse(responseCall[0])
-    expect(sent.type).toBe('response')
-    expect(sent.request_id).toBe('req-456')
-    expect(sent.error).toBe('unsupported')
-  })
-
-  it('should append final output when assistant message already exists (non-stream path)', async () => {
+  it('should handle output frame then done frame (non-stream path)', async () => {
     useChatStore.setState({
       sessionId: 'sess-1',
       messages: [
@@ -355,58 +359,34 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
-    // Tool event creates an empty assistant message
+    // v2: output is its own frame (not combined with done)
     act(() => {
-      ws.onmessage({ data: JSON.stringify({ event: 'tool', tool: 'shell', status: 'ok' }) })
+      ws.onmessage({ data: JSON.stringify({ type: 'output', session_id: 'sess-1', text: 'Complete response' }) })
     })
 
     let state = useChatStore.getState()
     expect(state.messages).toHaveLength(2)
     expect(state.messages[1].role).toBe('assistant')
-    expect(state.messages[1].content).toBe('')
+    expect(state.messages[1].content).toBe('Complete response')
+    // Still streaming — done hasn't arrived yet
+    expect(state.isStreaming).toBe(true)
 
-    // Non-stream output with done — should append to the existing assistant msg
+    // Now done arrives
     act(() => {
-      ws.onmessage({ data: JSON.stringify({ output: 'Done!', done: true }) })
+      ws.onmessage({ data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: { total_tokens: 100 } }) })
     })
 
     state = useChatStore.getState()
-    expect(state.messages).toHaveLength(2)
-    expect(state.messages[1].content).toBe('Done!')
     expect(state.isStreaming).toBe(false)
-  })
-
-  it('should handle non-stream output without prior assistant message', async () => {
-    useChatStore.setState({
-      sessionId: 'sess-1',
-      messages: [
-        { id: 'user-1', role: 'user', content: 'Hello' },
-      ],
-    })
-    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
-
-    await act(async () => {
-      await new Promise((r) => setTimeout(r, 1))
-    })
-
-    const ws = globalThis.WebSocket.instances.at(-1)
-
-    // Non-stream: just one frame with output + done
-    act(() => {
-      ws.onmessage({ data: JSON.stringify({ output: 'Complete response', done: true }) })
-    })
-
-    const state = useChatStore.getState()
-    expect(state.messages).toHaveLength(2)
+    // Content unchanged
     expect(state.messages[1].content).toBe('Complete response')
-    expect(state.isStreaming).toBe(false)
   })
 
-  it('should skip output when streaming deltas were received (preserves tool markers)', async () => {
+  it('should handle output+done with tool event (output creates assistant message)', async () => {
     useChatStore.setState({
       sessionId: 'sess-1',
       messages: [
-        { id: 'user-1', role: 'user', content: 'Hello' },
+        { id: 'user-1', role: 'user', content: 'Read file' },
       ],
     })
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
@@ -417,28 +397,125 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
-    // Receive stream deltas (these use the active session_id)
-    act(() => { ws.onmessage({ data: JSON.stringify({ delta: 'Hello ', session_id: 'sess-1' }) }) })
-    act(() => { ws.onmessage({ data: JSON.stringify({ delta: 'world', session_id: 'sess-1' }) }) })
+    // v2: tool frame with id field
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool',
+          session_id: 'sess-1',
+          id: 'call_001',
+          tool: 'read_file',
+          status: 'start',
+          args: { path: '/tmp/x.txt' },
+          snippet: "read_file '/tmp/x.txt'",
+        }),
+      })
+    })
 
     let state = useChatStore.getState()
-    expect(state.messages[1].content).toBe('Hello world')
+    expect(state.messages).toHaveLength(2)
+    expect(state.messages[1].toolCalls).toHaveLength(1)
+    expect(state.messages[1].toolCalls[0].tool).toBe('read_file')
+    expect(state.messages[1].toolCalls[0].tool_call_id).toBe('call_001')
+    expect(state.messages[1].content).toContain('\x00TOOL:0\x00')
 
-    // The frame below has both output AND done — since we already received
-    // streaming deltas, the output should be skipped (accumulated content
-    // with tool markers is preserved).
+    // tool ok frame with same id
     act(() => {
-      ws.onmessage({ data: JSON.stringify({ output: 'should not appear', done: true, session_id: 'sess-1' }) })
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool',
+          session_id: 'sess-1',
+          id: 'call_001',
+          tool: 'read_file',
+          status: 'ok',
+          result: 'file content here',
+        }),
+      })
     })
 
     state = useChatStore.getState()
-    // Content should remain 'Hello world' — the output was skipped, preserving any
-    // \x00TOOL:N\x00 markers that tool events may have added during streaming
-    expect(state.messages[1].content).toBe('Hello world')
+    expect(state.messages[1].toolCalls).toHaveLength(1)
+    expect(state.messages[1].toolCalls[0].status).toBe('ok')
+
+    // output frame
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'output', session_id: 'sess-1', text: 'File contains...' }) })
+    })
+
+    state = useChatStore.getState()
+    expect(state.messages[1].content).toContain('File contains...')
+
+    // done frame
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: {} }) })
+    })
+
+    state = useChatStore.getState()
     expect(state.isStreaming).toBe(false)
   })
 
-  it('should handle get_session via command_result and persist last session', async () => {
+  it('should match tool frames by id (not by snippet)', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Run tools' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Two concurrent tools with different ids
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool', session_id: 'sess-1', id: 'call_a',
+          tool: 'read_file', status: 'start', args: { path: 'a.txt' }, snippet: "read_file 'a.txt'",
+        }),
+      })
+    })
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool', session_id: 'sess-1', id: 'call_b',
+          tool: 'shell', status: 'start', args: { command: 'ls' }, snippet: 'ls -la',
+        }),
+      })
+    })
+
+    let state = useChatStore.getState()
+    expect(state.messages[1].toolCalls).toHaveLength(2)
+    expect(state.messages[1].toolCalls[0].tool_call_id).toBe('call_a')
+    expect(state.messages[1].toolCalls[1].tool_call_id).toBe('call_b')
+
+    // Finish in reverse order — should still match by id
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool', session_id: 'sess-1', id: 'call_b',
+          tool: 'shell', status: 'ok', result: 'file list',
+        }),
+      })
+    })
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool', session_id: 'sess-1', id: 'call_a',
+          tool: 'read_file', status: 'err', error: 'not found',
+        }),
+      })
+    })
+
+    state = useChatStore.getState()
+    expect(state.messages[1].toolCalls[0].status).toBe('err')
+    expect(state.messages[1].toolCalls[1].status).toBe('ok')
+  })
+
+  it('should handle get_session via result frame and persist last session', async () => {
     useChatStore.setState({
       sessionId: 'sess-1',
       messages: [
@@ -454,11 +531,11 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
-    // Simulate receiving command_result for get_session
+    // v2: command_result is now type:"result"
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'command_result',
+          type: 'result',
           cmd: 'get_session',
           session_id: 'sess-1',
           data: {
@@ -481,7 +558,323 @@ describe('useWebSocket', () => {
     expect(localStorage.getItem('hakka_pending_session')).toBeNull()
   })
 
-  it('should skip output after session switch while streaming (preserves tool markers)', async () => {
+  it('should handle session lifecycle events (created/renamed/deleted)', async () => {
+    useChatStore.setState({
+      sessions: [
+        { id: 'sess-1', name: 'old-name' },
+        { id: 'sess-2', name: 'other' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // v2: session renamed via type:"session" with event:"renamed"
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'session',
+          session_id: 'sess-1',
+          event: 'renamed',
+          old_name: 'old-name',
+          name: 'New Session Name',
+        }),
+      })
+    })
+
+    let state = useChatStore.getState()
+    const renamed = state.sessions.find(s => s.id === 'sess-1')
+    expect(renamed).toBeDefined()
+    expect(renamed.name).toBe('New Session Name')
+    // Other sessions unchanged
+    const other = state.sessions.find(s => s.id === 'sess-2')
+    expect(other.name).toBe('other')
+  })
+
+  it('should handle session created lifecycle event', async () => {
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // v2: session created
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'session',
+          session_id: 'new-uuid',
+          event: 'created',
+          name: 'New Chat',
+          model: 'deepseek',
+          message_count: 0,
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    const created = state.sessions.find(s => s.id === 'new-uuid')
+    expect(created).toBeDefined()
+    expect(created.name).toBe('New Chat')
+    expect(created.model).toBe('deepseek')
+  })
+
+  it('should handle session deleted lifecycle event', async () => {
+    useChatStore.setState({
+      sessions: [
+        { id: 'sess-1', name: 'Chat 1' },
+        { id: 'sess-2', name: 'Chat 2' },
+      ],
+      sessionId: 'sess-1',
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'session',
+          session_id: 'sess-1',
+          event: 'deleted',
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    expect(state.sessions.find(s => s.id === 'sess-1')).toBeUndefined()
+    expect(state.sessions).toHaveLength(1)
+    expect(state.sessionId).toBeNull()
+  })
+
+  it('should handle welcome frame on connect with in_flight session', async () => {
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // v2: welcome frame instead of session_list
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'welcome',
+          namespace: 'default',
+          sessions: [
+            { id: 'sess-inflight', short_id: 'inflight', name: 'Active Chat', in_flight: true },
+            { id: 'sess-other', short_id: 'other', name: 'Old Chat' },
+          ],
+        }),
+      })
+    })
+
+    // Should have sent a get_session for the in_flight session
+    const sendCalls = ws.send.mock.calls
+    const getSessionCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'get_session'
+    })
+    expect(getSessionCall).toBeDefined()
+    const sent = JSON.parse(getSessionCall[0])
+    expect(sent.type).toBe('cmd')
+    expect(sent.command.params.id).toBe('sess-inflight')
+  })
+
+  it('should fall back to last session from localStorage when no in_flight', async () => {
+    localStorage.setItem('hakka_last_session_id', 'sess-last')
+
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Welcome with no in_flight
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'welcome',
+          namespace: 'default',
+          sessions: [
+            { id: 'sess-1', short_id: 's1', name: 'Chat 1' },
+            { id: 'sess-2', short_id: 's2', name: 'Chat 2' },
+          ],
+        }),
+      })
+    })
+
+    // Should load localStorage session
+    const sendCalls = ws.send.mock.calls
+    const getSessionCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'get_session'
+    })
+    expect(getSessionCall).toBeDefined()
+    const sent = JSON.parse(getSessionCall[0])
+    expect(sent.command.params.id).toBe('sess-last')
+  })
+
+  it('should keep current session if no in_flight and sessionId already set', async () => {
+    useChatStore.setState({ sessionId: 'sess-current' })
+
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Welcome with no in_flight
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'welcome',
+          sessions: [
+            { id: 'sess-current', short_id: 'cur', name: 'Current' },
+            { id: 'sess-other', short_id: 'oth', name: 'Other' },
+          ],
+        }),
+      })
+    })
+
+    // Should NOT send get_session — current session is already active
+    const sendCalls = ws.send.mock.calls
+    const getSessionCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'get_session'
+    })
+    expect(getSessionCall).toBeUndefined()
+  })
+
+  it('should prefer in_flight session over localStorage', async () => {
+    localStorage.setItem('hakka_last_session_id', 'sess-stored')
+
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Welcome with in_flight pointing to a different session
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'welcome',
+          sessions: [
+            { id: 'sess-active', short_id: 'act', name: 'Active', in_flight: true },
+            { id: 'sess-stored', short_id: 'sto', name: 'Stored' },
+          ],
+        }),
+      })
+    })
+
+    const sendCalls = ws.send.mock.calls
+    const getSessionCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'get_session'
+    })
+    expect(getSessionCall).toBeDefined()
+    const sent = JSON.parse(getSessionCall[0])
+    // Should load in_flight, not localStorage
+    expect(sent.command.params.id).toBe('sess-active')
+  })
+
+  it('should not reload in_flight session if already active', async () => {
+    useChatStore.setState({ sessionId: 'sess-active' })
+
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'welcome',
+          sessions: [
+            { id: 'sess-active', short_id: 'act', name: 'Active', in_flight: true },
+          ],
+        }),
+      })
+    })
+
+    const sendCalls = ws.send.mock.calls
+    const getSessionCall = sendCalls.find((c) => {
+      const p = JSON.parse(c[0])
+      return p.command && p.command.cmd === 'get_session'
+    })
+    expect(getSessionCall).toBeUndefined()
+  })
+
+  it('should handle done frame with stats and update session metadata', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', name: 'Chat' }],
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Start streaming
+    await act(async () => {
+      result.current.send(null, 'Hi')
+    })
+
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'Hello' }) }) })
+
+    // v2: done frame with stats
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'done',
+          session_id: 'sess-1',
+          stats: {
+            total_tokens: 150,
+            total_cost: 0.0015,
+            estimated_context_tokens: 5000,
+            model: 'deepseek',
+          },
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    expect(state.isStreaming).toBe(false)
+    expect(state.sessionEstimatedTokens['sess-1']).toBe(5000)
+    expect(state.sessionTotalCost['sess-1']).toBe(0.0015)
+    // Model should be updated in sessions list
+    const session = state.sessions.find(s => s.id === 'sess-1')
+    expect(session?.model).toBe('deepseek')
+  })
+
+  it('should handle done frame with error', async () => {
     useChatStore.setState({
       sessionId: 'sess-1',
       messages: [
@@ -496,45 +889,53 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
-    // Start streaming in sess-1
-    act(() => { ws.onmessage({ data: JSON.stringify({ delta: 'part1 ', session_id: 'sess-1' }) }) })
-    let state = useChatStore.getState()
-    expect(state.messages[1].content).toBe('part1 ')
-
-    // Session switch to sess-2 via command_result (get_session)
+    // v2: error done frame
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'command_result',
-          cmd: 'get_session',
+          type: 'done',
           session_id: 'sess-1',
-          data: {
-            session: { id: 'sess-2', short_id: 'sess-2', name: '' },
-            messages: [],
-          },
+          error: 'something went wrong',
+          stats: {},
         }),
       })
     })
 
-    state = useChatStore.getState()
-    expect(state.sessionId).toBe('sess-2')
-    expect(state.messages).toHaveLength(0)
+    const state = useChatStore.getState()
+    expect(state.isStreaming).toBe(false)
+    expect(state.error).toBe('something went wrong')
+  })
 
-    // Now sess-1's TurnFinished arrives with output+done
-    // Since deltas were received for sess-1, the output should be skipped
-    // to preserve the accumulated content with tool markers
-    act(() => {
-      ws.onmessage({ data: JSON.stringify({ output: 'should not double', done: true, session_id: 'sess-1' }) })
+  it('should handle type:"error" frame (before any turn)', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      isStreaming: false,
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
     })
 
-    state = useChatStore.getState()
-    expect(state.messages).toHaveLength(0)
-    // sess-1's cached messages should keep the accumulated deltas (with tool markers)
-    expect(state.sessionMessages['sess-1'][1].content).toBe('part1 ')
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // v2: error frame with explicit type
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'error',
+          session_id: 'sess-1',
+          error: 'tool not found: unknown_tool',
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    expect(state.error).toBe('tool not found: unknown_tool')
     expect(state.isStreaming).toBe(false)
   })
 
-  it('should format tool_list command result as assistant message', async () => {
+  it('should format tool_list result frame as assistant message', async () => {
     useChatStore.setState({
       sessionId: 'sess-1',
       messages: [
@@ -549,12 +950,11 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
-    // Simulate receiving a command_result for tool_list
-    // (triggered by execute('tool_list', {}) from parseSlashCommand)
+    // v2: result frame
     act(() => {
       ws.onmessage({
         data: JSON.stringify({
-          event: 'command_result',
+          type: 'result',
           cmd: 'tool_list',
           session_id: 'sess-1',
           data: {
@@ -580,11 +980,11 @@ describe('useWebSocket', () => {
     expect(state.messages[0].content).toBe('/tool list')
   })
 
-  it('should update session name on session_autorename push event', async () => {
+  it('should handle streaming: delta frames then done', async () => {
     useChatStore.setState({
-      sessions: [
-        { id: 'sess-1', name: 'old-name' },
-        { id: 'sess-2', name: 'other' },
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
       ],
     })
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
@@ -595,30 +995,70 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
+    // v2: delta frames with text field
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'Hello ' } ) }) })
+    let state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('Hello ')
+
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'world' } ) }) })
+    state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('Hello world')
+
+    // done frame
     act(() => {
-      ws.onmessage({ data: JSON.stringify({
-        event: 'session_autorename',
-        session_id: 'sess-1',
-        data: {
-          session: { id: 'sess-1', name: 'Auto Renamed Session' },
-        },
-      }) })
+      ws.onmessage({
+        data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: { total_tokens: 50 } }),
+      })
     })
 
-    const state = useChatStore.getState()
-    const renamed = state.sessions.find(s => s.id === 'sess-1')
-    expect(renamed).toBeDefined()
-    expect(renamed.name).toBe('Auto Renamed Session')
-    // Other sessions should be unchanged
-    const other = state.sessions.find(s => s.id === 'sess-2')
-    expect(other.name).toBe('other')
+    state = useChatStore.getState()
+    expect(state.isStreaming).toBe(false)
+    expect(state.messages[1].content).toBe('Hello world')
   })
 
-  it('should update session name on session_renamed event', async () => {
+  it('should handle output before done (non-stream, no tools)', async () => {
     useChatStore.setState({
-      sessions: [
-        { id: 'sess-1', name: 'old-name' },
-        { id: 'sess-2', name: 'other' },
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
+      ],
+      isStreaming: true,
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // v2: output frame first
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({ type: 'output', session_id: 'sess-1', text: 'Complete response' }),
+      })
+    })
+
+    let state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('Complete response')
+    expect(state.isStreaming).toBe(true) // not done yet
+
+    // Then done
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: {} }),
+      })
+    })
+
+    state = useChatStore.getState()
+    expect(state.isStreaming).toBe(false)
+  })
+
+  it('should ignore output when streaming deltas were already received', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
       ],
     })
     const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
@@ -629,24 +1069,80 @@ describe('useWebSocket', () => {
 
     const ws = globalThis.WebSocket.instances.at(-1)
 
+    // Receive stream deltas
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'Hello ' }) }) })
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'world' }) }) })
+
+    let state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('Hello world')
+
+    // output frame after deltas — should be ignored to preserve tool markers
     act(() => {
-      ws.onmessage({ data: JSON.stringify({
-        event: 'session_renamed',
-        session_id: 'sess-1',
-        data: {
-          session_id: 'sess-1',
-          old_name: 'old-name',
-          name: 'New Session Name',
-        },
-      }) })
+      ws.onmessage({ data: JSON.stringify({ type: 'output', session_id: 'sess-1', text: 'should not appear' }) })
     })
 
-    const state = useChatStore.getState()
-    const renamed = state.sessions.find(s => s.id === 'sess-1')
-    expect(renamed).toBeDefined()
-    expect(renamed.name).toBe('New Session Name')
-    // Other sessions should be unchanged
-    const other = state.sessions.find(s => s.id === 'sess-2')
-    expect(other.name).toBe('other')
+    // Then done
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: {} }) })
+    })
+
+    state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('Hello world')
+    expect(state.isStreaming).toBe(false)
+  })
+
+  it('should skip output after session switch while streaming (preserves tool markers)', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Start streaming in sess-1
+    act(() => { ws.onmessage({ data: JSON.stringify({ type: 'delta', session_id: 'sess-1', text: 'part1 ' }) }) })
+    let state = useChatStore.getState()
+    expect(state.messages[1].content).toBe('part1 ')
+
+    // Session switch to sess-2 via result frame (get_session)
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'result',
+          cmd: 'get_session',
+          session_id: 'sess-1',
+          data: {
+            session: { id: 'sess-2', short_id: 'sess-2', name: '' },
+            messages: [],
+          },
+        }),
+      })
+    })
+
+    state = useChatStore.getState()
+    expect(state.sessionId).toBe('sess-2')
+    expect(state.messages).toHaveLength(0)
+
+    // Now sess-1's output+done arrives
+    // Since deltas were received for sess-1, the output should be skipped
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'output', session_id: 'sess-1', text: 'should not double' }) })
+    })
+    act(() => {
+      ws.onmessage({ data: JSON.stringify({ type: 'done', session_id: 'sess-1', stats: {} }) })
+    })
+
+    state = useChatStore.getState()
+    expect(state.messages).toHaveLength(0)
+    // sess-1's cached messages should keep the accumulated deltas (with tool markers)
+    expect(state.sessionMessages['sess-1'][1].content).toBe('part1 ')
+    expect(state.isStreaming).toBe(false)
   })
 })

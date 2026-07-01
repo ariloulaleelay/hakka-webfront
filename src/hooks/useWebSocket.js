@@ -48,130 +48,11 @@ function clearPendingSession() {
 }
 
 /**
- * Parse a slash command from user input and handle it locally.
- * All text starting with / is intercepted — never sent to the LLM.
- * Recognized commands are dispatched via execute(). Unknown commands
- * get an inline assistant error message.
- *
- * @param {string} text - The user's input text
- * @param {Function} execute - The execute function from useWebSocket
- * @returns {boolean} - true if handled as a slash command (caller should NOT send to LLM)
- */
-export function parseSlashCommand(text, execute) {
-  if (!text || !text.startsWith('/')) return false
-
-  const trimmed = text.slice(1).trim()
-  const parts = trimmed.split(/\s+/)
-  const cmd = parts[0]?.toLowerCase()
-  const args = parts.slice(1)
-
-  const store = useChatStore.getState()
-  const sid = store.sessionId
-
-  // Show user message in chat so the command is visible in history
-  store.sendMessage(text, sid)
-
-  switch (cmd) {
-    case 'help':
-      execute('help', {})
-      return true
-
-    case 'tool': {
-      const sub = args[0]
-      if (!sub || sub === 'list') {
-        execute('tool_list', {})
-      } else if (sub === 'allow' && args[1]) {
-        execute('tool_allow', { name: args.slice(1).join(' ') })
-      } else if (sub === 'deny' && args[1]) {
-        execute('tool_deny', { name: args.slice(1).join(' ') })
-      } else {
-        store.appendAssistantMessage(
-          `Unknown command: \`${text}\`\n\nTry: \`/tool list\`, \`/tool allow <name>\`, \`/tool deny <name>\``,
-          sid
-        )
-      }
-      return true
-    }
-
-    case 'model':
-    case 'models': {
-      if (cmd === 'models' || args[0] === 'list') {
-        execute('model_list', {})
-      } else if (args[0] === 'switch' && args[1]) {
-        execute('model_switch', { name: args.slice(1).join(' ') })
-      } else {
-        store.appendAssistantMessage(
-          `Unknown command: \`${text}\`\n\nTry: \`/models\`, \`/model list\`, \`/model switch <name>\``,
-          sid
-        )
-      }
-      return true
-    }
-
-    case 'session': {
-      const sub = args[0]
-      if (sub === 'list') {
-        execute('session_list', {})
-      } else if (sub === 'info') {
-        execute('session_info', {})
-      } else if (sub === 'rename' && args.slice(1).join(' ')) {
-        execute('session_rename', { name: args.slice(1).join(' ') })
-      } else {
-        store.appendAssistantMessage(
-          `Unknown command: \`${text}\`\n\nTry: \`/session list\`, \`/session info\`, \`/session rename <name>\``,
-          sid
-        )
-      }
-      return true
-    }
-
-    case 'compact': {
-      const n = parseInt(args[0], 10)
-      if (!isNaN(n) && n > 0) {
-        execute('compact', { n })
-      } else {
-        store.appendAssistantMessage(
-          `Usage: \`/compact <n>\` — compact to last \`n\` messages`,
-          sid
-        )
-      }
-      return true
-    }
-
-    case 'cwd': {
-      const path = args.join(' ')
-      if (path) {
-        execute('cwd_set', { cwd: path })
-      } else {
-        store.appendAssistantMessage(
-          `Usage: \`/cwd <path>\` — set working directory`,
-          sid
-        )
-      }
-      return true
-    }
-
-    case 'continue':
-      execute('continue', {})
-      return true
-
-    case 'start':
-      execute('start', {})
-      return true
-
-    default:
-      store.appendAssistantMessage(
-        `Unknown command: \`${text}\`\n\nType \`/help\` for available commands.`,
-        sid
-      )
-      return true
-  }
-}
-
-/**
- * Manages a WebSocket connection to a Hakka instance using the JSON command API.
+ * Manages a WebSocket connection to a Hakka instance using the v2 JSON protocol.
+ * Every frame has a mandatory `type` field.
  * Tolerates reconnections: preserves session state across disconnects and
- * automatically restores the last active session when the connection resumes.
+ * automatically restores the correct session on reconnect: first checks the
+ * server's welcome message for an in_flight flag, then falls back to localStorage.
  */
 export function useWebSocket(url) {
   const wsRef = useRef(null)
@@ -216,12 +97,9 @@ export function useWebSocket(url) {
       const state = useChatStore.getState()
       state.setConnectionStatus('connected')
       retryIndexRef.current = 0
-      sendRaw({ command: { cmd: 'session_list', params: {} } })
-      const pendingId = readPendingSession()
-      const lastId = pendingId || readLastSession()
-      if (lastId && state.sessionId !== lastId) {
-        sendRaw({ command: { cmd: 'get_session', params: { id: lastId } } })
-      }
+      // v2: No session_list sent on connect — server pushes welcome frame.
+      // Session loading (in_flight, localStorage fallback) happens reactively
+      // in the welcome handler.
     }
 
     ws.onmessage = (event) => {
@@ -231,7 +109,7 @@ export function useWebSocket(url) {
       } catch {
         return
       }
-      handleFrame(frame)
+      handleV2Frame(frame)
     }
 
     ws.onclose = () => {
@@ -263,214 +141,290 @@ export function useWebSocket(url) {
     ws.send(JSON.stringify(payload))
   }
 
-  function handleFrame(frame) {
+  /**
+   * Handle incoming v2 protocol frame by dispatching on `frame.type`.
+   * Every server->client frame has a mandatory `type` field.
+   */
+  function handleV2Frame(frame) {
     const store = useChatStore.getState()
     const sid = getSid(frame)
 
-    if (frame.error) {
-      store.setError(frame.error)
-      if (sid && streamingStartedRef.current[sid]) {
-        store.finalizeMessage(sid)
-      }
-      return
-    }
+    switch (frame.type) {
+      // --- welcome: connection greeting with session list ---
+      case 'welcome': {
+        const sessions = frame.sessions || []
+        store.handleCommandResult('session_list', { sessions })
 
-    if (frame.event === 'session_renamed') {
-      store.handleSessionRenamed(sid, frame.session_name || frame.data?.name)
-      return
-    }
+        const state = useChatStore.getState()
+        const inFlight = sessions.find((s) => s.in_flight)
 
-    if (frame.event === 'session_autorename') {
-      const data = frame.data || {}
-      if (data.session && data.session.id && data.session.name) {
-        store.handleSessionRenamed(data.session.id, data.session.name)
-      }
-      return
-    }
-
-    // Token usage metadata — extract estimated_context_tokens if present.
-    if (frame.event === 'meta') {
-      if (frame.data && frame.data.estimated_context_tokens !== undefined) {
-        store.setEstimatedContextTokens(frame.data.estimated_context_tokens, sid)
-      }
-      return
-    }
-
-    if (frame.event === 'cancel') {
-      // Cancel acknowledgment from server — clear cancelling state.
-      store.handleCancelResponse()
-      return
-    }
-
-    if (frame.event === 'tool') {
-      // Merge top-level frame fields (tool, status, args, exec_snippet)
-      // with frame.data (which carries result/output for finish events).
-      const event = {
-        ...(frame.data || {}),
-        tool: frame.tool,
-        status: frame.status,
-        args: frame.args,
-        exec_snippet: frame.exec_snippet,
-      }
-      store.addToolEvent(event, sid)
-      return
-    }
-
-    if (frame.event === 'command_result' && frame.cmd) {
-      store.handleCommandResult(frame.cmd, frame.data || {})
-
-      const cmdSid = getSid(frame)
-
-      // Persist last session when switching via get_session
-      if (frame.cmd === 'get_session') {
-        const switchSid = frame.data?.session?.id
-        if (switchSid) {
-          persistLastSession(switchSid)
-          clearPendingSession()
+        if (inFlight) {
+          // Server says this session is active — load it
+          if (state.sessionId !== inFlight.id) {
+            persistLastSession(inFlight.id)
+            clearPendingSession()
+            sendRaw({ type: 'cmd', command: { cmd: 'get_session', params: { id: inFlight.id } } })
+          }
+        } else if (!state.sessionId) {
+          // No in_flight and no active session: fall back to localStorage
+          const pendingId = readPendingSession()
+          const lastId = pendingId || readLastSession()
+          if (lastId) {
+            sendRaw({ type: 'cmd', command: { cmd: 'get_session', params: { id: lastId } } })
+          }
         }
+        return
       }
 
-      // For command results triggered by slash commands (parseSlashCommand),
-      // build a readable summary and push it as an assistant message.
-
-      if (frame.cmd === 'tool_list' && frame.data?.tools) {
-        const tools = frame.data.tools
-        const enabled = tools.filter((t) => t.enabled).length
-        const disabled = tools.filter((t) => !t.enabled).length
-        const lines = tools.map((t) => {
-          const tags = (t.tags || []).join(', ')
-          return '  ' + (t.enabled ? '✓' : '✗') + ' ' + t.name + '  (tags: ' + tags + ')'
-        })
-        const header = '**Available tools (' + tools.length + ')** — ' + enabled + ' enabled, ' + disabled + ' disabled'
-        const msg = header + '\n\n```\n' + lines.join('\n') + '\n```'
-        store.appendAssistantMessage(msg, cmdSid)
+      // --- delta: streaming text chunk ---
+      case 'delta': {
+        const targetSid = sid
+        if (!streamingStartedRef.current[targetSid]) {
+          streamingStartedRef.current[targetSid] = true
+          deltasReceivedRef.current[targetSid] = false
+          store.startAssistantMessage(targetSid)
+        }
+        if (frame.text) {
+          deltasReceivedRef.current[targetSid] = true
+          store.appendDelta(frame.text, targetSid)
+        }
+        return
       }
 
-      if (frame.cmd === 'help' && frame.data?.commands) {
-        const commands = frame.data.commands
-        const lines = commands.map((c) => {
-          const name = c.name || c.cmd || ''
-          const desc = c.description || c.desc || ''
-          return '  `' + name + '` — ' + desc
-        })
-        const msg = '**Available commands**\n\n' + lines.join('\n')
-        store.appendAssistantMessage(msg, cmdSid)
+      // --- output: full non-stream reply (before done) ---
+      case 'output': {
+        const targetSid = sid
+        if (!streamingStartedRef.current[targetSid]) {
+          streamingStartedRef.current[targetSid] = true
+          store.startAssistantMessage(targetSid)
+        }
+        if (frame.text && !deltasReceivedRef.current[targetSid]) {
+          store.appendDelta(frame.text, targetSid)
+        }
+        // If deltas were already received, skip the output — accumulated
+        // content with \x00TOOL:N\x00 markers must be preserved.
+        return
       }
 
-      if (frame.cmd === 'model_list' && frame.data?.models) {
-        const models = frame.data.models
-        const lines = models.map((m) => {
-          return '  ' + (m.current ? '✓' : ' ') + ' ' + (m.name || m.model || '')
-        })
-        const msg = '**Models**\n\n```\n' + lines.join('\n') + '\n```'
-        store.appendAssistantMessage(msg, cmdSid)
+      // --- done: terminal frame (stream complete, error, or cancelled) ---
+      case 'done': {
+        const targetSid = sid
+        const hadDeltas = deltasReceivedRef.current[targetSid]
+        delete streamingStartedRef.current[targetSid]
+        delete deltasReceivedRef.current[targetSid]
+
+        // Handle cancelled
+        if (frame.cancelled) {
+          store.handleCancelResponse()
+          if (targetSid) store.finalizeMessage(targetSid)
+          return
+        }
+
+        // Handle error
+        if (frame.error) {
+          store.setError(frame.error)
+          if (targetSid) store.finalizeMessage(targetSid)
+          return
+        }
+
+        // Handle output on done (final accumulated text for non-stream)
+        if (frame.text && targetSid && !hadDeltas) {
+          // No deltas were received — this is the non-stream path
+          // (Note: streamingStartedRef was just deleted, so check
+          //  by seeing if we need to create an assistant message)
+          const state = useChatStore.getState()
+          const msgs = targetSid === state.sessionId ? state.messages : (state.sessionMessages[targetSid] || [])
+          const last = msgs[msgs.length - 1]
+          if (!last || last.role !== 'assistant') {
+            store.startAssistantMessage(targetSid)
+          }
+          store.appendDelta(frame.text, targetSid)
+        }
+
+        // Handle stats (end-of-turn metadata)
+        if (frame.stats) {
+          const stats = frame.stats
+          if (stats.estimated_context_tokens !== undefined) {
+            store.setEstimatedContextTokens(stats.estimated_context_tokens, targetSid)
+          }
+          if (stats.total_cost !== undefined) {
+            store.setTotalCost(stats.total_cost, targetSid)
+          }
+          if (stats.model && targetSid) {
+            store.setModel(targetSid, stats.model)
+          }
+        }
+
+        // Always finalize on done
+        if (targetSid) {
+          store.finalizeMessage(targetSid)
+        } else {
+          store.setStreaming(false)
+        }
+        return
       }
 
-      if (frame.cmd === 'model_switch' && frame.data?.model) {
-        const msg = 'Switched to model: **' + frame.data.model + '**'
-        store.appendAssistantMessage(msg, cmdSid)
+      // --- tool: tool lifecycle (start/ok/err) ---
+      case 'tool': {
+        const event = {
+          tool: frame.tool,
+          status: frame.status,
+          args: frame.args,
+          exec_snippet: frame.snippet,
+          tool_call_id: frame.id, // v2: unique tool call id for matching start→ok/err
+          // For finish events, carry result/error
+          data: frame.result || frame.error ? { result: frame.result, error: frame.error } : undefined,
+          result: frame.result,
+          error: frame.error,
+        }
+        store.addToolEvent(event, sid)
+        return
       }
 
-      if (frame.cmd === 'cwd_set' && frame.data?.cwd) {
-        store.appendAssistantMessage('Working directory set to: **' + frame.data.cwd + '**', cmdSid)
+      // --- usage: token usage after each LLM call ---
+      case 'usage': {
+        const data = frame
+        if (data.estimated_context_tokens !== undefined) {
+          store.setEstimatedContextTokens(data.estimated_context_tokens, sid)
+        }
+        if (data.total_cost !== undefined) {
+          store.setTotalCost(data.total_cost, sid)
+        }
+        return
       }
 
-      if (frame.cmd === 'compact') {
-        store.appendAssistantMessage('Compacted session.', cmdSid)
+      // --- result: command output (replaces event:"command_result") ---
+      case 'result': {
+        if (frame.cmd) {
+          store.handleCommandResult(frame.cmd, { ...frame.data, _frameSessionId: frame.session_id })
+
+          const cmdSid = getSid(frame)
+
+          // Persist last session when switching via get_session
+          if (frame.cmd === 'get_session') {
+            const switchSid = frame.data?.session?.id
+            if (switchSid) {
+              persistLastSession(switchSid)
+              clearPendingSession()
+            }
+          }
+
+          // After switching sessions, fetch session info (model, etc.)
+          if (frame.cmd === 'get_session') {
+            const targetSid = frame.data?.session?.id || store.sessionId
+            sendRaw({ type: 'cmd', session_id: targetSid, command: { cmd: 'session_info', params: {} } })
+          }
+
+          // Format readable summaries for slash command results
+          if (frame.cmd === 'tool_list' && frame.data?.tools) {
+            const tools = frame.data.tools
+            const enabled = tools.filter((t) => t.enabled).length
+            const disabled = tools.filter((t) => !t.enabled).length
+            const lines = tools.map((t) => {
+              const tags = (t.tags || []).join(', ')
+              return '  ' + (t.enabled ? '✓' : '✗') + ' ' + t.name + '  (tags: ' + tags + ')'
+            })
+            const header = '**Available tools (' + tools.length + ')** — ' + enabled + ' enabled, ' + disabled + ' disabled'
+            const msg = header + '\n\n```\n' + lines.join('\n') + '\n```'
+            store.appendAssistantMessage(msg, cmdSid)
+          }
+
+          if (frame.cmd === 'help' && frame.data?.commands) {
+            const commands = frame.data.commands
+            const lines = commands.map((c) => {
+              const name = c.name || c.cmd || ''
+              const desc = c.description || c.desc || ''
+              return '  `' + name + '` — ' + desc
+            })
+            const msg = '**Available commands**\n\n' + lines.join('\n')
+            store.appendAssistantMessage(msg, cmdSid)
+          }
+
+          if (frame.cmd === 'model_list' && frame.data?.models) {
+            const models = frame.data.models
+            const lines = models.map((m) => {
+              return '  ' + (m.current ? '✓' : ' ') + ' ' + (m.name || m.model || '')
+            })
+            const msg = '**Models**\n\n```\n' + lines.join('\n') + '\n```'
+            store.appendAssistantMessage(msg, cmdSid)
+          }
+
+          if (frame.cmd === 'model_switch' && frame.data?.model) {
+            const msg = 'Switched to model: **' + frame.data.model + '**'
+            store.appendAssistantMessage(msg, cmdSid)
+          }
+
+          if (frame.cmd === 'cwd_set' && frame.data?.cwd) {
+            store.appendAssistantMessage('Working directory set to: **' + frame.data.cwd + '**', cmdSid)
+          }
+
+          if (frame.cmd === 'compact') {
+            store.appendAssistantMessage('Compacted session.', cmdSid)
+          }
+        }
+        return
       }
 
-      // NOTE: We can't just remove the early return and let done:true fall through
-      // to the done handler below, because other command_result frames (e.g.,
-      // session_list sent via execute()) can arrive while a different session is
-      // mid-stream via LLM. The done handler would call finalizeMessage with
-      // wrong session_id and prematurely stop that stream.
-      // Only tool_list needs explicit finalization because it's triggered via
-      // send() (chat message) which sets isStreaming=true.
-      return
-    }
-
-    // Backward compatibility: handle old session_switch event format
-    if (frame.event === 'session_switch') {
-      const data = frame.data || {}
-      store.handleCommandResult('get_session', data)
-      const switchSid = data.session?.id
-      if (switchSid) {
-        persistLastSession(switchSid)
-        clearPendingSession()
+      // --- session: lifecycle event (created/renamed/deleted) ---
+      case 'session': {
+        const sSid = frame.session_id
+        // If frame has session and/or messages at top level, treat as session switch
+        if (frame.session || frame.messages) {
+          store.handleCommandResult('get_session', {
+            session: frame.session || { id: sSid },
+            messages: frame.messages || [],
+            events: frame.events,
+          })
+          if (sSid) {
+            persistLastSession(sSid)
+            clearPendingSession()
+          }
+          return
+        }
+        // Otherwise, handle lifecycle events (created/renamed/deleted)
+        switch (frame.event) {
+          case 'created':
+            store.handleCommandResult('session_create', {
+              session: {
+                id: sSid,
+                name: frame.name || '',
+                model: frame.model,
+                message_count: frame.message_count,
+              },
+            })
+            break
+          case 'renamed':
+            store.handleSessionRenamed(sSid, frame.name)
+            break
+          case 'deleted':
+            store.handleCommandResult('session_delete', { deleted: sSid, active_cleared: sSid === store.sessionId })
+            break
+        }
+        return
       }
-      return
-    }
 
-    if (frame.event === 'session_create') {
-      const data = frame.data || {}
-      store.handleCommandResult('session_create', data)
-      return
-    }
-
-    if (frame.event === 'session_list') {
-      store.handleCommandResult('session_list', { sessions: frame.data?.sessions || [] })
-      return
-    }
-
-    if (frame.event === 'session_info') {
-      store.handleCommandResult('session_info', { session: frame.data?.session || {} })
-      return
-    }
-
-    // Client request (e.g., vim tool asking the web UI to perform an action).
-    // The web UI doesn't support any client-side requests, so respond with error.
-    if (frame.event === 'vim_request' || frame.event === 'client_request') {
-      const req = frame.vim_request || frame.client_request || {}
-      if (req.request_id) {
-        sendRaw({
-          type: 'response',
-          request_id: req.request_id,
-          error: 'unsupported',
-        })
+      // --- req: server requests client action ---
+      case 'req': {
+        const req = frame
+        if (req.request_id) {
+          sendRaw({
+            type: 'resp',
+            request_id: req.request_id,
+            error: 'unsupported',
+          })
+        }
+        return
       }
-      return
-    }
 
-    const targetSid = sid != null ? sid : useChatStore.getState().sessionId
+      // --- error: error before any turn started ---
+      case 'error': {
+        store.setError(frame.error)
+        return
+      }
 
-    if (frame.delta !== undefined) {
-      if (!streamingStartedRef.current[targetSid]) {
-        streamingStartedRef.current[targetSid] = true
-        deltasReceivedRef.current[targetSid] = false
-        store.startAssistantMessage(targetSid)
-      }
-      if (frame.delta) {
-        deltasReceivedRef.current[targetSid] = true
-        store.appendDelta(frame.delta, targetSid)
-      }
-      return
-    }
-
-    if (frame.output !== undefined) {
-      if (!streamingStartedRef.current[targetSid]) {
-        streamingStartedRef.current[targetSid] = true
-        store.startAssistantMessage(targetSid)
-      }
-      if (!deltasReceivedRef.current[targetSid]) {
-        // Non-stream path: no prior deltas, so this is the first (and only) content.
-        // There may already be an empty assistant message from a tool event.
-        store.appendDelta(frame.output, targetSid)
-      }
-      // If deltas were received, skip the output — the accumulated content already
-      // has the correct text with \x00TOOL:N\x00 markers embedded inline by addToolEvent.
-      // Appending the output (full text, no markers) would either double the content
-      // (background session) or strip tool markers (active session).
-      delete streamingStartedRef.current[targetSid]
-      delete deltasReceivedRef.current[targetSid]
-      store.finalizeMessage(targetSid)
-      return
-    }
-
-    if (frame.done) {
-      delete streamingStartedRef.current[targetSid]
-      delete deltasReceivedRef.current[targetSid]
-      store.finalizeMessage(targetSid)
-      return
+      default:
+        // Unknown frame type — ignore
+        return
     }
   }
 
@@ -484,11 +438,12 @@ export function useWebSocket(url) {
         const status = { ...store.sessionStatus, [actualId]: 'streaming' }
         useChatStore.setState({ sessionStatus: status })
       }
+      // v2: use type:"chat", no cwd
       sendRaw({
+        type: 'chat',
         session_id: actualId,
         input: text,
         stream: stream !== false,
-        cwd: store.cwd || '/',
       })
     },
     []
@@ -497,7 +452,8 @@ export function useWebSocket(url) {
   const execute = useCallback(
     (cmd, params = {}) => {
       const store = useChatStore.getState()
-      const payload = { command: { cmd, params } }
+      // v2: use type:"cmd"
+      const payload = { type: 'cmd', command: { cmd, params } }
       if (store.sessionId) {
         payload.session_id = store.sessionId
       }
