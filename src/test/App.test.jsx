@@ -25,7 +25,7 @@ describe('App', () => {
     expect(screen.getByText('Sessions')).toBeInTheDocument()
   })
 
-  it('should show CWD bar in the header', () => {
+  it('should show CWD bar', () => {
     render(<App />)
     expect(screen.getByText('CWD')).toBeInTheDocument()
   })
@@ -33,6 +33,20 @@ describe('App', () => {
   it('should show the input bar', () => {
     render(<App />)
     expect(screen.getByPlaceholderText(/type a message/i)).toBeInTheDocument()
+  })
+
+  it('should have input bar in the header (top panel)', () => {
+    const { container } = render(<App />)
+    const header = container.querySelector('.app__header')
+    expect(header).toBeInTheDocument()
+    expect(header.querySelector('.input-bar')).toBeInTheDocument()
+  })
+
+  it('should have CWD and tokens info in the footer (bottom panel)', () => {
+    const { container } = render(<App />)
+    const footer = container.querySelector('.app__footer')
+    expect(footer).toBeInTheDocument()
+    expect(footer.querySelector('.cwd-bar')).toBeInTheDocument()
   })
 
   it('should show error banner when there is an error', () => {

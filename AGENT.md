@@ -28,7 +28,7 @@ It connects to a running Hakka instance via a WebSocket gateway (`/ws`) and prov
 ```
 src/
 ├── main.jsx                          # Entry point, renders <App />
-├── App.jsx                           # Root layout: Sidebar + header + ChatArea + InputBar
+├── App.jsx                           # Root layout: Sidebar + header (InputBar) + ChatArea + footer (CwdBar, TokensBar)
 ├── App.css                           # All application styles
 ├── index.css                         # Global reset / base styles
 │
@@ -38,7 +38,7 @@ src/
 │   ├── InputBar.jsx                  # Text input + Send/Cancel button
 │   ├── MarkdownContent.jsx           # ReactMarkdown wrapper with custom code & link rendering
 │   ├── Sidebar.jsx                   # Session list with status dots, new/delete session
-│   ├── TokensBar.jsx                 # Estimated session tokens display (top-right header)
+│   ├── TokensBar.jsx                 # Estimated session tokens display (bottom-right footer)
 │   └── ToolCall.jsx                  # Inline tool call display (name + snippet, color-coded)
 │
 ├── hooks/
@@ -212,13 +212,14 @@ Every incoming frame has a mandatory `type` field. Processing is done via a `swi
 Root component. Layout:
 ```
 ┌─────────────────────────────────┐
-│ Sidebar  |  Header (CwdBar)     │
+│ Sidebar  |  Header (InputBar)   │
 │          ├──────────────────────┤
 │          │  ChatArea            │
 │          │  (message list)      │
 │          │                      │
 │          ├──────────────────────┤
-│          │  InputBar            │
+│          │  Footer (CwdBar,     │
+│          │     TokensBar)       │
 └─────────┴──────────────────────┘
 ```
 
@@ -249,7 +250,7 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 
 ### TokensBar.jsx
 
-- Displays estimated session context tokens, session model, and total cost in the header (top-right)
+- Displays estimated session context tokens, session model, and total cost in the footer (bottom-right)
 - Reads tokens for the current active session from `sessionEstimatedTokens` map
 - Reads cost for the current active session from `sessionTotalCost` map
 - Reads model name for the current active session from `sessions` array (from `session.model`)

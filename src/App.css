@@ -560,7 +560,7 @@
   color: #fff;
 }
 
-/* === CwdBar (header) === */
+/* === CwdBar === */
 .cwd-bar {
   display: flex;
   align-items: center;
@@ -872,16 +872,13 @@
   min-width: 0;
 }
 
-/* === Header (inside main area) === */
+/* === Header (inside main area) — now contains InputBar === */
 .app__header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  height: var(--header-height);
+  align-items: stretch;
   padding: 0 16px;
   border-bottom: 1px solid var(--border-color);
   flex-shrink: 0;
-  gap: 12px;
 }
 
 /* === Error Banner === */
@@ -902,9 +899,16 @@
   padding: 16px;
 }
 
-/* === Footer / Input === */
+/* === Footer — now contains CwdBar + TokensBar === */
 .app__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: var(--header-height);
+  padding: 0 16px;
+  border-top: 1px solid var(--border-color);
   flex-shrink: 0;
+  gap: 12px;
 }
 
 /* === Connection Status === */
@@ -1229,7 +1233,8 @@
 /* === Input Bar === */
 .input-bar {
   display: flex;
-  padding: 4px 8px;
+  flex: 1;
+  padding: 4px 0;
   background: var(--bg-primary);
 }
 

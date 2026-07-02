@@ -77,8 +77,7 @@ function App() {
 
       <div className="app__main-area">
         <header className="app__header">
-          <CwdBar onCwdChange={handleCwdChange} />
-          <TokensBar />
+          <InputBar onSend={handleSend} onCancel={handleCancel} />
         </header>
 
         {error && (
@@ -92,7 +91,8 @@ function App() {
         </main>
 
         <footer className="app__footer">
-          <InputBar onSend={handleSend} onCancel={handleCancel} />
+          <CwdBar onCwdChange={handleCwdChange} />
+          <TokensBar />
         </footer>
       </div>
     </div>

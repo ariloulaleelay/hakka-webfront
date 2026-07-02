@@ -52,7 +52,7 @@ npm run build     # outputs to dist/
 ```
 src/
 ├── main.jsx                    — Entry point
-├── App.jsx                     — Root component: Sidebar + Header + ChatArea + InputBar
+├── App.jsx                     — Root component: Sidebar + header (InputBar) + ChatArea + footer (CwdBar, TokensBar)
 ├── App.css                     — All application styles
 ├── index.css                   — Global reset, theme variables
 ├── store/
