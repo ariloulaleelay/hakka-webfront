@@ -23,6 +23,7 @@
 ### Markdown & Rendering
 - [x] Full GFM support (tables, lists, code blocks, etc.)
 - [x] Syntax highlighting with highlight.js
+- [x] LaTeX math rendering ($...$ inline, $$...$$ display) via KaTeX
 - [x] Inline tool call display at correct position in message stream
 - [x] Links open in new tab
 

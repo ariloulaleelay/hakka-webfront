@@ -1312,6 +1312,83 @@ describe('useChatStore', () => {
     store.handleCommandResult('get_session', { session: { id: 'sess-a' }, messages: [] })
     expect(useChatStore.getState().cwd).toBe('/updated/a')
   })
+
+  // --- Timestamp propagation ---
+
+  it('should use provided ts when starting assistant message', () => {
+    const store = useChatStore.getState()
+    store.sendMessage('Hello')
+
+    const ts = 1700000000000
+    store.startAssistantMessage(null, ts)
+
+    const msgs = useChatStore.getState().messages
+    expect(msgs).toHaveLength(2)
+    expect(msgs[1].timestamp).toBe(ts)
+  })
+
+  it('should use Date.now() when no ts provided to startAssistantMessage', () => {
+    const before = Date.now()
+    const store = useChatStore.getState()
+    store.sendMessage('Hello')
+    store.startAssistantMessage()
+    const after = Date.now()
+
+    const msgs = useChatStore.getState().messages
+    expect(msgs).toHaveLength(2)
+    expect(msgs[1].timestamp).toBeGreaterThanOrEqual(before)
+    expect(msgs[1].timestamp).toBeLessThanOrEqual(after)
+  })
+
+  it('should preserve existing timestamp when reusing assistant message', () => {
+    const store = useChatStore.getState()
+    store.sendMessage('Hello')
+
+    const ts = 1700000000000
+    store.startAssistantMessage(null, ts)
+
+    // Second startAssistantMessage reuses the same message
+    store.startAssistantMessage(null, 1800000000000)
+
+    const msgs = useChatStore.getState().messages
+    expect(msgs).toHaveLength(2)
+    // Timestamp should remain as originally set (ts from first call)
+    expect(msgs[1].timestamp).toBe(ts)
+  })
+
+  it('should use event.timestamp when adding a tool event', () => {
+    const store = useChatStore.getState()
+    store.sendMessage('Run')
+    store.startAssistantMessage()
+    store.addToolEvent({
+      tool: 'shell',
+      status: 'start',
+      exec_snippet: 'ls',
+      timestamp: 1700000000000,
+    })
+
+    const toolCalls = useChatStore.getState().messages[1].toolCalls
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0].timestamp).toBe(1700000000000)
+  })
+
+  it('should use Date.now() when no timestamp in tool event', () => {
+    const before = Date.now()
+    const store = useChatStore.getState()
+    store.sendMessage('Run')
+    store.startAssistantMessage()
+    store.addToolEvent({
+      tool: 'shell',
+      status: 'start',
+      exec_snippet: 'ls',
+    })
+    const after = Date.now()
+
+    const toolCalls = useChatStore.getState().messages[1].toolCalls
+    expect(toolCalls).toHaveLength(1)
+    expect(toolCalls[0].timestamp).toBeGreaterThanOrEqual(before)
+    expect(toolCalls[0].timestamp).toBeLessThanOrEqual(after)
+  })
 })
 
 describe('replayEvents', () => {
@@ -1513,5 +1590,65 @@ describe('replayEvents', () => {
     expect(result[1].toolCalls[0].tool).toBe('read_file')
     expect(result[1].toolCalls[0].status).toBe('ok')
     expect(result[1].toolCalls[0].tool_call_id).toBe('call_1')
+  })
+
+  // --- Timestamp propagation in replayEvents ---
+
+  it('should use event.ts for user message timestamps in replayEvents', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Hello!', ts: 1700000000000 },
+    ])
+    expect(result).toHaveLength(1)
+    expect(result[0].role).toBe('user')
+    expect(result[0].timestamp).toBe(1700000000000)
+  })
+
+  it('should use event.ts for assistant message timestamps in replayEvents', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Hi', ts: 1700000000000 },
+      { type: 'delta', text: 'Hello', ts: 1700000000001 },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].role).toBe('assistant')
+    expect(result[1].timestamp).toBe(1700000000001)
+  })
+
+  it('should use event.ts for tool call timestamps in replayEvents', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Run tool' },
+      { type: 'delta', text: 'Running...' },
+      { type: 'tool', id: 'c1', tool: 'shell', status: 'start', args: {}, snippet: 'ls', ts: 1700000000050 },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].timestamp).toBe(1700000000050)
+  })
+
+  it('should use Date.now() when ts is missing in replayEvents', () => {
+    const before = Date.now()
+    const result = replayEvents([
+      { type: 'chat', text: 'Hello!' },
+    ])
+    const after = Date.now()
+
+    expect(result).toHaveLength(1)
+    expect(result[0].timestamp).toBeGreaterThanOrEqual(before)
+    expect(result[0].timestamp).toBeLessThanOrEqual(after)
+  })
+
+  it('should preserve start timestamp on tool ok event in replayEvents', () => {
+    const result = replayEvents([
+      { type: 'chat', text: 'Do tool' },
+      { type: 'delta', text: 'Running' },
+      { type: 'tool', id: 'c1', tool: 'shell', status: 'start', args: {}, snippet: 'ls', ts: 1700000000050 },
+      { type: 'tool', id: 'c1', tool: 'shell', status: 'ok', result: 'done', ts: 1700000000100 },
+      { type: 'done' },
+    ])
+    expect(result).toHaveLength(2)
+    // The ok event updates the existing tool call, preserving the start timestamp
+    expect(result[1].toolCalls).toHaveLength(1)
+    expect(result[1].toolCalls[0].timestamp).toBe(1700000000050)
   })
 })

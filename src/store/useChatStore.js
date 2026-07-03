@@ -176,7 +176,7 @@ export function replayEvents(events) {
           id: genId(),
           role: 'user',
           content: event.text || '',
-          timestamp: Date.now(),
+          timestamp: event.ts !== undefined ? event.ts : Date.now(),
         }
         const last = result[result.length - 1]
         if (last && last.role === 'user') {
@@ -195,7 +195,7 @@ export function replayEvents(events) {
             role: 'assistant',
             content: '',
             toolCalls: [],
-            timestamp: Date.now(),
+            timestamp: event.ts !== undefined ? event.ts : Date.now(),
           }
           result.push(currentAssistant)
         }
@@ -227,7 +227,7 @@ export function replayEvents(events) {
             result: undefined,
             error: undefined,
             id: genId(),
-            timestamp: Date.now(),
+            timestamp: event.ts !== undefined ? event.ts : Date.now(),
           }
           toolCalls.push(entry)
           currentAssistant.content += toolMarker(toolCalls.length - 1)
@@ -483,7 +483,7 @@ export const useChatStore = create((set, get) => ({
     return msg
   },
 
-  startAssistantMessage: (sessionId) => {
+  startAssistantMessage: (sessionId, ts) => {
     const state = get()
     const msgs = getSessionMsgs(state, sessionId)
     const last = msgs[msgs.length - 1]
@@ -504,7 +504,7 @@ export const useChatStore = create((set, get) => ({
       role: 'assistant',
       content: '',
       toolCalls: [],
-      timestamp: Date.now(),
+      timestamp: ts !== undefined ? ts : Date.now(),
     }
     const sid = sessionId || state.sessionId
     const isBackground = sessionId && sessionId !== state.sessionId
@@ -591,7 +591,7 @@ export const useChatStore = create((set, get) => ({
       }
 
       const toolCalls = [...(last.toolCalls || [])]
-      const entry = { ...event, id: genId(), timestamp: Date.now() }
+      const entry = { ...event, id: genId(), timestamp: event.timestamp !== undefined ? event.timestamp : Date.now() }
 
       if (event.status === 'start') {
         toolCalls.push(entry)

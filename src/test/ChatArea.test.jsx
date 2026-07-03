@@ -198,4 +198,69 @@ describe('ChatArea', () => {
 
     Element.prototype.scrollIntoView = origScrollIntoView
   })
+
+  describe('timestamp display', () => {
+    it('should show ISO time for today\'s messages', () => {
+      const now = Date.now()
+      useChatStore.setState({
+        messages: [
+          { id: '1', role: 'user', content: 'Hello!', timestamp: now },
+        ],
+      })
+      render(<ChatArea />)
+
+      const timeElements = document.querySelectorAll('.message__time')
+      expect(timeElements.length).toBe(1)
+      // Today's messages show just the time in ISO format (e.g. "14:34:22")
+      expect(timeElements[0].textContent).toMatch(/^\d{2}:\d{2}:\d{2}$/)
+    })
+
+    it('should show ISO date + time for older messages', () => {
+      // Timestamp for 2020-06-15 10:30 UTC — definitely not today
+      const ts = new Date('2020-06-15T10:30:00Z').getTime()
+      useChatStore.setState({
+        messages: [
+          {
+            id: '2',
+            role: 'assistant',
+            content: 'Hi there!',
+            timestamp: ts,
+            toolCalls: [],
+          },
+        ],
+      })
+      render(<ChatArea />)
+
+      const timeElements = document.querySelectorAll('.message__time')
+      expect(timeElements.length).toBe(1)
+      // Non-today — should show ISO date + time with seconds
+      expect(timeElements[0].textContent).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)
+    })
+
+    it('should not show time when timestamp is missing', () => {
+      useChatStore.setState({
+        messages: [
+          { id: '1', role: 'user', content: 'Hello!', timestamp: undefined },
+        ],
+      })
+      render(<ChatArea />)
+
+      const timeElements = document.querySelectorAll('.message__time')
+      expect(timeElements.length).toBe(0)
+    })
+
+    it('should render time in every bubble', () => {
+      const now = Date.now()
+      useChatStore.setState({
+        messages: [
+          { id: '1', role: 'user', content: 'Hey', timestamp: now },
+          { id: '2', role: 'assistant', content: 'Hello', timestamp: now, toolCalls: [] },
+        ],
+      })
+      render(<ChatArea />)
+
+      const timeElements = document.querySelectorAll('.message__time')
+      expect(timeElements.length).toBe(2)
+    })
+  })
 })

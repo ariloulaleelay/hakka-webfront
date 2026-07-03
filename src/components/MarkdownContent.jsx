@@ -1,11 +1,17 @@
 import { memo } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 
 /**
  * Renders markdown content with syntax-highlighted code blocks,
- * GFM tables, and other standard markdown features.
+ * GFM tables, LaTeX math, and other standard markdown features.
+ *
+ * Supports:
+ * - Inline math: $E = mc^2$
+ * - Display math: $$\sum_{i=1}^{n} i$$
  *
  * Handles streaming gracefully: during streaming, syntax highlighting
  * is skipped to avoid issues with incomplete code blocks.
@@ -13,8 +19,8 @@ import rehypeHighlight from 'rehype-highlight'
 export const MarkdownContent = memo(function MarkdownContent({ content, isStreaming }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
-      rehypePlugins={isStreaming ? [] : [rehypeHighlight]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={isStreaming ? [rehypeKatex] : [rehypeKatex, rehypeHighlight]}
       components={{
         code({ className, children, ...props }) {
           const match = /language-(\w+)/.exec(className || '')

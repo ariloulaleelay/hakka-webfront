@@ -1145,4 +1145,78 @@ describe('useWebSocket v2 protocol', () => {
     expect(state.sessionMessages['sess-1'][1].content).toBe('part1 ')
     expect(state.isStreaming).toBe(false)
   })
+
+  // --- Timestamp (ts) propagation from frames ---
+
+  it('should pass ts from delta frame to startAssistantMessage on first delta', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Hello' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // First delta with ts — should create assistant message with that timestamp
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'delta', session_id: 'sess-1', text: 'Hello ', ts: 1700000000001,
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    expect(state.messages[1].timestamp).toBe(1700000000001)
+
+    // Second delta without ts — should not change timestamp
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'delta', session_id: 'sess-1', text: 'world',
+        }),
+      })
+    })
+
+    const state2 = useChatStore.getState()
+    expect(state2.messages[1].timestamp).toBe(1700000000001)
+    expect(state2.messages[1].content).toBe('Hello world')
+  })
+
+  it('should pass ts from tool frame to addToolEvent', async () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      messages: [
+        { id: 'user-1', role: 'user', content: 'Run tool' },
+      ],
+    })
+    const { result } = renderHook(() => useWebSocket('ws://localhost/ws'))
+
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 1))
+    })
+
+    const ws = globalThis.WebSocket.instances.at(-1)
+
+    // Tool start with ts
+    act(() => {
+      ws.onmessage({
+        data: JSON.stringify({
+          type: 'tool', session_id: 'sess-1', id: 'c1',
+          tool: 'shell', status: 'start', args: {}, snippet: 'ls',
+          ts: 1700000000050,
+        }),
+      })
+    })
+
+    const state = useChatStore.getState()
+    expect(state.messages[1].toolCalls).toHaveLength(1)
+    expect(state.messages[1].toolCalls[0].timestamp).toBe(1700000000050)
+  })
 })

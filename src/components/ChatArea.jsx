@@ -53,6 +53,29 @@ function renderContentWithToolCalls(message, isStreaming) {
   return elements
 }
 
+function formatMessageTime(timestamp) {
+  if (timestamp === undefined || timestamp === null) return null
+  const date = new Date(timestamp)
+  const now = new Date()
+  const isToday =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate()
+
+  const y = date.getFullYear()
+  const m = String(date.getMonth() + 1).padStart(2, '0')
+  const d = String(date.getDate()).padStart(2, '0')
+  const hh = String(date.getHours()).padStart(2, '0')
+  const mm = String(date.getMinutes()).padStart(2, '0')
+  const ss = String(date.getSeconds()).padStart(2, '0')
+
+  if (isToday) {
+    return `${hh}:${mm}:${ss}`
+  }
+
+  return `${y}-${m}-${d} ${hh}:${mm}:${ss}`
+}
+
 function MessageBubble({ message, isStreaming }) {
   const isUser = message.role === 'user'
   const [copied, setCopied] = useState(false)
@@ -89,6 +112,9 @@ function MessageBubble({ message, isStreaming }) {
           renderContentWithToolCalls(message, isStreaming)
         )}
       </div>
+      {message.timestamp !== undefined && (
+        <span className="message__time">{formatMessageTime(message.timestamp)}</span>
+      )}
     </div>
   )
 }

@@ -17,6 +17,7 @@ It connects to a running Hakka instance via a WebSocket gateway (`/ws`) and prov
 | Markdown Rendering | react-markdown | ^10.1.0 |
 | GFM Tables | remark-gfm | ^4.0.1 |
 | Code Highlighting | rehype-highlight | ^7.0.2 |
+| LaTeX Math | remark-math + rehype-katex | ^6.0.1 / ^6.0.3 |
 | Build Tool | Vite | ^8.1.0 |
 | Testing | Vitest + Testing Library | ^4.1.9 |
 | Linting | oxlint | ^1.69.0 |
@@ -95,7 +96,10 @@ interface Message {
   content: string          // Plain text or markdown. Contains \x00TOOL:N\x00 markers
                            // for inline tool call positions
   toolCalls?: ToolCall[]   // Tool calls belonging to this assistant message
-  timestamp: number
+  timestamp: number        // Unix timestamp in milliseconds. For user messages:
+                           //   Date.now() (client-generated). For assistant messages
+                           //   and tool calls: extracted from server frame's `ts`
+                           //   field when available, falls back to Date.now().
 }
 
 interface ToolCall {
@@ -155,10 +159,10 @@ Event types and their processing:
 
 | Event type | What it does |
 |---|---|
-| `"chat"` | Creates or merges a user message from `event.text` |
-| `"delta"` | Creates or appends to the current assistant message |
-| `"tool"` (status `"start"`) | Adds a tool call with `\x00TOOL:N\x00` marker |
-| `"tool"` (status `"ok"`/`"err"`) | Updates matching tool call by `event.id` (tool_call_id) |
+| `"chat"` | Creates or merges a user message from `event.text`. Uses `event.ts` for `timestamp` if available. |
+| `"delta"` | Creates or appends to the current assistant message. Uses `event.ts` for `timestamp` on creation. |
+| `"tool"` (status `"start"`) | Adds a tool call with `\x00TOOL:N\x00` marker. Uses `event.ts` for `timestamp` if available. |
+| `"tool"` (status `"ok"`/`"err"`) | Updates matching tool call by `event.id` (tool_call_id). Preserves the start timestamp. |
 | `"usage"` | Skipped (tokens tracked per-session in store maps) |
 | `"done"` | Resets the current assistant tracker (bare terminal marker) |
 
@@ -239,6 +243,7 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 - Renders messages via `MessageBubble` components
 - Each MessageBubble has a **copy button** (Tabler `IconCopy` icon) in the top-right corner, visible on hover, that copies the raw markdown (`message.content`) to clipboard using `navigator.clipboard.writeText()`
 - On click, the button shows "Copied!" for 2 seconds as visual feedback
+- Each message bubble shows a **formatted time** (`message__time`) at the bottom-right corner — formatted using `toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })` from the `message.timestamp` field. Hidden when timestamp is undefined/null.
 - Assistant messages use `renderContentWithToolCalls()` to interleave text and tool calls
 - Empty state: shows placeholder "No messages yet"
 - Auto-scrolls to bottom on new messages using `scrollIntoView()` (instant, no smooth animation)
@@ -272,10 +277,11 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 
 ### MarkdownContent.jsx
 
-- Wraps `react-markdown` with GFM support and code highlighting
+- Wraps `react-markdown` with GFM support, code highlighting, and **LaTeX math rendering**
+- Math support via `remark-math` (parsing `$...$` inline and `$$...$$` display math) and `rehype-katex` (rendering with KaTeX)
 - Custom `code` component: inline vs block detection, language label on code blocks
 - Custom `a` component: opens links in new tab
-- `isStreaming` prop disables rehype-highlight to avoid issues with incomplete code blocks
+- `isStreaming` prop disables rehype-highlight to avoid issues with incomplete code blocks (math highlighting via rehype-katex is always active)
 
 ### ToolCall.jsx
 
@@ -430,15 +436,19 @@ Sent immediately after WebSocket handshake. Replaces the old `list_sessions` dan
 #### `type: "delta"` — Streaming text chunk
 
 ```json
-{"type":"delta", "session_id":"<uuid>", "text":"Hel"}
-{"type":"delta", "session_id":"<uuid>", "text":"lo!"}
+{"type":"delta", "session_id":"<uuid>", "text":"Hel", "ts": 1700000000001}
+{"type":"delta", "session_id":"<uuid>", "text":"lo!", "ts": 1700000000001}
 ```
+
+- `ts` (optional) — Unix timestamp in milliseconds for the message. Used to set `timestamp` on the assistant message when the first delta frame arrives.
 
 #### `type: "output"` — Full non-stream reply
 
 ```json
-{"type":"output", "session_id":"<uuid>", "text":"Hello!"}
+{"type":"output", "session_id":"<uuid>", "text":"Hello!", "ts": 1700000000001}
 ```
+
+- `ts` (optional) — Unix timestamp in milliseconds for the message.
 
 Emitted exactly once, before `"done"`, when the client did not request streaming.
 
@@ -448,8 +458,10 @@ Every tool call has a unique `id` that correlates `start` with `ok`/`err`.
 
 **Start:**
 ```json
-{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"start", "args":{"path":"README.md"}, "snippet":"read_file 'README.md'"}
+{"type":"tool", "session_id":"<uuid>", "id":"call_abc123", "tool":"read_file", "status":"start", "args":{"path":"README.md"}, "snippet":"read_file 'README.md'", "ts": 1700000000050}
 ```
+
+- `ts` (optional) — Unix timestamp in milliseconds for the tool call. Used to set `timestamp` on the tool call entry.
 
 **Success:**
 ```json

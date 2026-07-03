@@ -64,4 +64,45 @@ describe('MarkdownContent', () => {
     const { container } = render(<MarkdownContent content="" />)
     expect(container).toBeInTheDocument()
   })
+
+  describe('math rendering', () => {
+    it('renders inline math with $ delimiters', () => {
+      render(<MarkdownContent content="The formula $E = mc^2$ is famous." />)
+      // KaTeX renders math inside elements with class "katex"
+      const katexElements = document.querySelectorAll('.katex')
+      expect(katexElements.length).toBeGreaterThanOrEqual(1)
+      // The math should contain the rendered content
+      expect(katexElements[0].textContent).toMatch(/E/i)
+    })
+
+    it('renders display math with $$ delimiters', () => {
+      render(<MarkdownContent content="$$\sum_{i=1}^{n} i = \frac{n(n+1)}{2}$$" />)
+      // Display math renders as KaTeX; look for generic .katex elements
+      const katexElements = document.querySelectorAll('.katex')
+      expect(katexElements.length).toBeGreaterThanOrEqual(1)
+      // Should contain the rendered formula elements
+      expect(katexElements[0].textContent).toMatch(/n/i)
+    })
+
+    it('renders multiple math expressions in the same content', () => {
+      render(<MarkdownContent content="Inline: $a^2 + b^2 = c^2$ and display: $$\int_a^b f(x)\,dx$$" />)
+      const katexElements = document.querySelectorAll('.katex')
+      // Should have at least two KaTeX elements (one inline, one display)
+      expect(katexElements.length).toBeGreaterThanOrEqual(2)
+    })
+
+    it('renders math alongside regular markdown', () => {
+      render(<MarkdownContent content="## Title\n\nHere is $x = 5$ in a paragraph." />)
+      // KaTeX may embed within headings; use a loose text matcher
+      expect(screen.getByText(/Title/)).toBeInTheDocument()
+      const katexElements = document.querySelectorAll('.katex')
+      expect(katexElements.length).toBeGreaterThanOrEqual(1)
+    })
+
+    it('handles math during streaming (does not crash)', () => {
+      render(<MarkdownContent content="Testing $E = mc^2$ streaming" isStreaming={true} />)
+      const katexElements = document.querySelectorAll('.katex')
+      expect(katexElements.length).toBeGreaterThanOrEqual(1)
+    })
+  })
 })

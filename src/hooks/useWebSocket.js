@@ -182,7 +182,7 @@ export function useWebSocket(url) {
         if (!streamingStartedRef.current[targetSid]) {
           streamingStartedRef.current[targetSid] = true
           deltasReceivedRef.current[targetSid] = false
-          store.startAssistantMessage(targetSid)
+          store.startAssistantMessage(targetSid, frame.ts)
         }
         if (frame.text) {
           deltasReceivedRef.current[targetSid] = true
@@ -196,7 +196,7 @@ export function useWebSocket(url) {
         const targetSid = sid
         if (!streamingStartedRef.current[targetSid]) {
           streamingStartedRef.current[targetSid] = true
-          store.startAssistantMessage(targetSid)
+          store.startAssistantMessage(targetSid, frame.ts)
         }
         if (frame.text && !deltasReceivedRef.current[targetSid]) {
           store.appendDelta(frame.text, targetSid)
@@ -276,6 +276,7 @@ export function useWebSocket(url) {
           data: frame.result || frame.error ? { result: frame.result, error: frame.error } : undefined,
           result: frame.result,
           error: frame.error,
+          timestamp: frame.ts,
         }
         store.addToolEvent(event, sid)
         return

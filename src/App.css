@@ -1025,6 +1025,16 @@
   opacity: 1;
 }
 
+.message__time {
+  display: block;
+  font-size: 10px;
+  color: var(--text-muted);
+  text-align: right;
+  margin-top: 4px;
+  line-height: 1;
+  user-select: none;
+}
+
 /* === Tool Call (inline, expandable, colored left border) === */
 .tool-call {
   display: block;
@@ -1262,6 +1272,43 @@
 .message__content img {
   max-width: 100%;
   border-radius: 6px;
+}
+
+/* === Math / KaTeX styles === */
+.message__content .math {
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 2px 0;
+}
+
+.message__content .math-inline {
+  display: inline-block;
+}
+
+.message__content .math-display {
+  display: block;
+  margin: 8px 0;
+  text-align: center;
+}
+
+/* KaTeX overrides for dark theme */
+.message__content .katex {
+  font-size: 1.1em;
+}
+
+.message__content .katex-display {
+  margin: 0.5em 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.message__content .katex .katex-html {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.message__content .katex .base {
+  color: var(--text-primary);
 }
 
 /* === Input Bar === */
