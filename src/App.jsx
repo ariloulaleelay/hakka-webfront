@@ -66,6 +66,20 @@ function App() {
     [execute]
   )
 
+  const handleSwitchModel = useCallback(
+    (modelName) => {
+      execute('model_switch', { name: modelName })
+    },
+    [execute]
+  )
+
+  const handleFetchModels = useCallback(
+    () => {
+      execute('model_list', {})
+    },
+    [execute]
+  )
+
   return (
     <div className="app">
       <Sidebar
@@ -92,7 +106,7 @@ function App() {
 
         <footer className="app__footer">
           <CwdBar onCwdChange={handleCwdChange} />
-          <TokensBar />
+          <TokensBar onSwitchModel={handleSwitchModel} onFetchModels={handleFetchModels} />
         </footer>
       </div>
     </div>

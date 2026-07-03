@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import { TokensBar } from '../components/TokensBar'
 import { useChatStore } from '../store/useChatStore'
 
@@ -10,6 +10,7 @@ describe('TokensBar', () => {
       sessionEstimatedTokens: {},
       sessionTotalCost: {},
       sessions: [],
+      models: [],
     })
   })
 
@@ -219,5 +220,141 @@ describe('TokensBar', () => {
     useChatStore.setState({ sessionId: 'sess-b' })
     rerender(<TokensBar />)
     expect(screen.getByText('$0.75')).toBeInTheDocument()
+  })
+
+  // --- Model picker dropdown tests ---
+
+  it('should not make model name clickable when onSwitchModel is not provided', () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+    })
+    render(<TokensBar />)
+    const modelEl = screen.getByText('gpt-4o')
+    expect(modelEl).toBeInTheDocument()
+    // Should not have the clickable class when no callback provided
+    expect(modelEl.className).not.toContain('--clickable')
+  })
+
+  it('should make model name clickable when onSwitchModel is provided', () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+    })
+    render(<TokensBar onSwitchModel={() => {}} />)
+    const modelEl = screen.getByText('gpt-4o')
+    expect(modelEl.className).toContain('--clickable')
+  })
+
+  it('should show dropdown when clicking on model name', () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [
+        { name: 'gpt-4o', current: true },
+        { name: 'claude-3', current: false },
+      ],
+    })
+    render(<TokensBar onSwitchModel={() => {}} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    expect(screen.getByText('claude-3', { exact: false })).toBeInTheDocument()
+  })
+
+  it('should call onSwitchModel when a different model is selected', () => {
+    const onSwitch = vi.fn()
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [
+        { name: 'gpt-4o', current: true },
+        { name: 'claude-3', current: false },
+      ],
+    })
+    render(<TokensBar onSwitchModel={onSwitch} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    act(() => { screen.getByText('claude-3', { exact: false }).click() })
+    expect(onSwitch).toHaveBeenCalledWith('claude-3')
+  })
+
+  it('should NOT call onSwitchModel when the current model is selected', () => {
+    const onSwitch = vi.fn()
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [
+        { name: 'gpt-4o', current: true },
+        { name: 'claude-3', current: false },
+      ],
+    })
+    const { container } = render(<TokensBar onSwitchModel={onSwitch} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    const currentItem = container.querySelector('.tokens-bar__dropdown-item--current')
+    expect(currentItem).toBeInTheDocument()
+    act(() => { currentItem.click() })
+    expect(onSwitch).not.toHaveBeenCalled()
+  })
+
+  it('should close dropdown after selecting a model', () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [
+        { name: 'gpt-4o', current: true },
+        { name: 'claude-3', current: false },
+      ],
+    })
+    render(<TokensBar onSwitchModel={() => {}} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    expect(screen.getByText('claude-3', { exact: false })).toBeInTheDocument()
+    act(() => { screen.getByText('claude-3', { exact: false }).click() })
+    expect(screen.queryByText('claude-3', { exact: false })).not.toBeInTheDocument()
+  })
+
+  it('should close dropdown on outside click', () => {
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [
+        { name: 'gpt-4o', current: true },
+        { name: 'claude-3', current: false },
+      ],
+    })
+    render(<TokensBar onSwitchModel={() => {}} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    expect(screen.getByText('claude-3', { exact: false })).toBeInTheDocument()
+    // Click outside — the dropdown listens for mousedown
+    act(() => { document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
+    expect(screen.queryByText('claude-3', { exact: false })).not.toBeInTheDocument()
+  })
+
+  it('should fetch models silently when dropdown opens and no models are loaded', () => {
+    const onFetch = vi.fn()
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [],
+    })
+    render(<TokensBar onSwitchModel={() => {}} onFetchModels={onFetch} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    expect(onFetch).toHaveBeenCalledOnce()
+  })
+
+  it('should not fetch models if already loaded', () => {
+    const onFetch = vi.fn()
+    useChatStore.setState({
+      sessionId: 'sess-1',
+      sessions: [{ id: 'sess-1', model: 'gpt-4o' }],
+      models: [{ name: 'gpt-4o', current: true }],
+    })
+    render(<TokensBar onSwitchModel={() => {}} onFetchModels={onFetch} />)
+    const modelEl = screen.getByText('gpt-4o')
+    act(() => { modelEl.click() })
+    expect(onFetch).not.toHaveBeenCalled()
   })
 })

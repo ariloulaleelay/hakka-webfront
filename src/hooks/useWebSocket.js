@@ -342,12 +342,17 @@ export function useWebSocket(url) {
           }
 
           if (frame.cmd === 'model_list' && frame.data?.models) {
-            const models = frame.data.models
-            const lines = models.map((m) => {
-              return '  ' + (m.current ? '✓' : ' ') + ' ' + (m.name || m.model || '')
-            })
-            const msg = '**Models**\n\n```\n' + lines.join('\n') + '\n```'
-            store.appendAssistantMessage(msg, cmdSid)
+            // If this was triggered silently (by model dropdown), don't show in chat
+            if (store._suppressModelListDisplay) {
+              useChatStore.getState().setSuppressModelListDisplay(false)
+            } else {
+              const models = frame.data.models
+              const lines = models.map((m) => {
+                return '  ' + (m.current ? '✓' : ' ') + ' ' + (m.name || m.model || '')
+              })
+              const msg = '**Models**\n\n```\n' + lines.join('\n') + '\n```'
+              store.appendAssistantMessage(msg, cmdSid)
+            }
           }
 
           if (frame.cmd === 'model_switch' && frame.data?.model) {

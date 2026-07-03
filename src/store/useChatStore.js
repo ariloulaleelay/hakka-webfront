@@ -880,12 +880,22 @@ export const useChatStore = create((set, get) => ({
         break
       case 'model_switch':
         if (data.model) {
-          set((state) => ({
-            models: (state.models || []).map((m) => ({
+          set((state) => {
+            const newModels = (state.models || []).map((m) => ({
               ...m,
               current: (m.name || m.model) === data.model,
-            })),
-          }))
+            }))
+            // Also update the current session's model so TokensBar reflects it immediately
+            const newSessions = state.sessionId
+              ? sortSessionsByUpdated(state.sessions.map((s) =>
+                  s.id === state.sessionId ? { ...s, model: data.model } : s
+                ))
+              : state.sessions
+            return {
+              models: newModels,
+              sessions: newSessions,
+            }
+          })
         }
         break
       case 'cwd_set':
@@ -997,4 +1007,13 @@ export const useChatStore = create((set, get) => ({
 
   /** Clear draft text (called by InputBar after consuming it). */
   clearDraftText: () => set({ draftText: null }),
+
+  /**
+   * When true, the WebSocket hook should NOT display model_list results in chat.
+   * Used by the model dropdown in TokensBar to silently refresh the model list.
+   * Automatically cleared after handling the result.
+   */
+  _suppressModelListDisplay: false,
+
+  setSuppressModelListDisplay: (val) => set({ _suppressModelListDisplay: val }),
 }))

@@ -264,6 +264,10 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 - Renders when the active session has a token value, a model name, or a total cost (any of the three)
 - Shows label "Model" and the model name (if available), then a separator, then "Tokens" and the numeric count, then if cost is present a separator, "Cost" and the formatted cost (e.g. `$1.50`)
 - Model name is colored with the accent color; cost is colored with the success (green) color
+- **Model name is clickable** when `onSwitchModel` callback is provided — opens a dropdown listing all available models from the store's `models` array
+- Clicking a different model in the dropdown calls `onSwitchModel(modelName)`, which triggers `model_switch` server command, and the model name updates immediately
+- The dropdown fetches models silently (suppressed from chat display) when first opened if `models` array is empty, via `onFetchModels` callback
+- Clicking outside or selecting a model closes the dropdown
 - Updated via `type:"usage"` frame (includes `estimated_context_tokens` and `total_cost`) and via `stats` in `type:"done"` frame
 - Persisted per-session in the store (preserved across session switches and restored on switch-back)
 - Cleaned up on session delete
