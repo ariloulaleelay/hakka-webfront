@@ -1,4 +1,5 @@
-import { useRef, useEffect } from 'react'
+import { useRef, useEffect, useState, useCallback } from 'react'
+import { IconCopy, IconCheck } from '@tabler/icons-react'
 import { useChatStore } from '../store/useChatStore'
 import { ToolCall } from './ToolCall'
 import { MarkdownContent } from './MarkdownContent'
@@ -54,9 +55,32 @@ function renderContentWithToolCalls(message, isStreaming) {
 
 function MessageBubble({ message, isStreaming }) {
   const isUser = message.role === 'user'
+  const [copied, setCopied] = useState(false)
+
+  const handleCopy = useCallback(async () => {
+    try {
+      // Strip tool call markers (\x00TOOL:N\x00) — replace consecutive tool
+      // markers (with surrounding whitespace/newlines) with a single \n\n separator
+      const cleanContent = message.content
+        .replace(/(\s*\x00TOOL:\d+\x00\s*)+/g, '\n\n')
+        .trim()
+      await navigator.clipboard.writeText(cleanContent)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    } catch {
+      // Clipboard API may fail in some contexts — ignore silently
+    }
+  }, [message.content])
 
   return (
     <div className={`message ${isUser ? 'message--user' : 'message--assistant'}`}>
+      <button
+        className={`message__copy-btn ${copied ? 'message__copy-btn--copied' : ''}`}
+        title="Copy markdown"
+        onClick={handleCopy}
+      >
+        {copied ? <IconCheck size={14} /> : <IconCopy size={14} />}
+      </button>
       <div className="message__role">{isUser ? 'You' : 'Hakka'}</div>
       <div className="message__content">
         {isUser ? (

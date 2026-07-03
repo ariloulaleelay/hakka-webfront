@@ -49,7 +49,8 @@
 - [x] **No double-append bug** — streaming deltas no longer duplicate when `TurnFinished` arrives
 - [x] **No duplicate subscriber bug** — switching sessions while streaming no longer duplicates every delta (server-side fix)
 - [x] **Clean input bar** — no border, no outline, no double padding; textarea flush to edges
-- [x] 130+ passing tests (11 test files)
+- [x] **Copy markdown button** — each message bubble has a Tabler `IconCopy` button (visible on hover) that copies raw LLM markdown to clipboard with `IconCheck` feedback
+- [x] 262+ passing tests (16 test files)
 
 ---
 

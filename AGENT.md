@@ -57,7 +57,7 @@ src/
     ├── Sidebar.test.jsx              # Sidebar tests
     ├── TokensBar.test.jsx           # TokensBar tests
     ├── genId.test.jsx                # ID generation tests
-    ├── useChatStore.test.jsx         # Store unit tests (33+ tests covering all actions)
+    ├── useChatStore.test.jsx         # Store unit tests (98 tests covering all actions)
     ├── useWebSocket.test.js          # WebSocket handler tests
     └── parseSlashCommand.test.js     # Slash command parsing tests (22 tests)
 ```
@@ -237,6 +237,8 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 ### ChatArea.jsx
 
 - Renders messages via `MessageBubble` components
+- Each MessageBubble has a **copy button** (Tabler `IconCopy` icon) in the top-right corner, visible on hover, that copies the raw markdown (`message.content`) to clipboard using `navigator.clipboard.writeText()`
+- On click, the button shows "Copied!" for 2 seconds as visual feedback
 - Assistant messages use `renderContentWithToolCalls()` to interleave text and tool calls
 - Empty state: shows placeholder "No messages yet"
 - Auto-scrolls to bottom on new messages using `scrollIntoView()` (instant, no smooth animation)
@@ -553,7 +555,8 @@ Key layout classes:
 - `.sidebar` — fixed-width left panel (280px)
 - `.app__main-area` — flex-grow column
 - `.chat-area` — message list, scrollable
-- `.message` — flex row with role label + content bubble
+- `.message` — flex row with role label + content bubble; `position: relative` for the copy button
+- `.message__copy-btn` — absolute-positioned "Copy" button in top-right corner, hidden by default (opacity 0), shown on hover, switches to "Copied!" on click
 - `.message__tools` — container for inline tool calls
 - `.tool-call--ok` — green border (success)
 - `.tool-call--err` — red border (error)
@@ -582,7 +585,7 @@ npm run build       # dist/
 
 ## Testing Patterns
 
-- **Store tests** (`useChatStore.test.jsx`): Direct state manipulation via `getState()/setState()`, no React rendering. Covers message creation, streaming, tool events, session management, caching, CWD persistence, and leak prevention.
+- **Store tests** (`useChatStore.test.jsx`): Direct state manipulation via `getState()/setState()`, no React rendering. Covers message creation, streaming, tool events, session management, caching, CWD persistence, and leak prevention (98 tests).
 - **Component tests** (`ChatArea.test.jsx`, etc.): Rendered with `@testing-library/react`, use store mocking for state injection.
 - **Integration tests** (`App.test.jsx`): Full app with mocked WebSocket.
 - **WebSocket tests** (`useWebSocket.test.js`): Mock WebSocket class, test frame parsing and routing.

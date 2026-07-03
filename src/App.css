@@ -963,6 +963,7 @@
   font-size: 14px;
   line-height: 1.5;
   word-wrap: break-word;
+  position: relative;
 }
 
 .message--user {
@@ -989,6 +990,39 @@
 
 .message__content {
   white-space: pre-wrap; overflow-x: hidden;
+}
+
+.message__copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s;
+  z-index: 1;
+  padding: 0;
+}
+
+.message:hover .message__copy-btn {
+  opacity: 0.5;
+}
+
+.message__copy-btn:hover {
+  opacity: 1 !important;
+}
+
+.message__copy-btn--copied {
+  color: var(--success, #22c55e);
+  opacity: 1;
 }
 
 /* === Tool Call (inline, expandable, colored left border) === */
