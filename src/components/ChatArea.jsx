@@ -87,11 +87,28 @@ function MessageBubble({ message, isStreaming }) {
       const cleanContent = message.content
         .replace(/(\s*\x00TOOL:\d+\x00\s*)+/g, '\n\n')
         .trim()
-      await navigator.clipboard.writeText(cleanContent)
+
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        // Modern Clipboard API — works on localhost and HTTPS
+        await navigator.clipboard.writeText(cleanContent)
+      } else {
+        // Fallback for non-secure contexts (remote HTTP servers)
+        const textarea = document.createElement('textarea')
+        textarea.value = cleanContent
+        textarea.style.position = 'fixed'
+        textarea.style.opacity = '0'
+        textarea.style.pointerEvents = 'none'
+        document.body.appendChild(textarea)
+        textarea.focus()
+        textarea.select()
+        document.execCommand('copy')
+        document.body.removeChild(textarea)
+      }
+
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     } catch {
-      // Clipboard API may fail in some contexts — ignore silently
+      // Clipboard may fail in some contexts — ignore silently
     }
   }, [message.content])
 

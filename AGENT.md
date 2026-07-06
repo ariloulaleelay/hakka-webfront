@@ -241,8 +241,9 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 ### ChatArea.jsx
 
 - Renders messages via `MessageBubble` components
-- Each MessageBubble has a **copy button** (Tabler `IconCopy` icon) in the top-right corner, visible on hover, that copies the raw markdown (`message.content`) to clipboard using `navigator.clipboard.writeText()`
-- On click, the button shows "Copied!" for 2 seconds as visual feedback
+- Each MessageBubble has a **copy button** (Tabler `IconCopy` icon) in the top-right corner, visible on hover, that copies the raw markdown (`message.content`) to clipboard
+- Uses `navigator.clipboard.writeText()` in secure contexts (HTTPS/localhost); falls back to `document.execCommand('copy')` with a temporary textarea for non-secure contexts (remote HTTP servers)
+- On click, the button shows "Copied!" (green `IconCheck`) for 2 seconds as visual feedback
 - Each message bubble shows a **formatted time** (`message__time`) at the bottom-right corner — formatted using `toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })` from the `message.timestamp` field. Hidden when timestamp is undefined/null.
 - Assistant messages use `renderContentWithToolCalls()` to interleave text and tool calls
 - Empty state: shows placeholder "No messages yet"

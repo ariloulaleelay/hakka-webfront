@@ -142,6 +142,47 @@ describe('ChatArea', () => {
     expect(writeText).toHaveBeenCalledWith("I'll read that file.\n\nHere's what I found:\n\n**Important**")
   })
 
+  it('should fall back to execCommand when navigator.clipboard is unavailable (remote server)', async () => {
+    // Simulate non-secure context (remote HTTP server) — clipboard API unavailable
+    const origClipboard = navigator.clipboard
+    Object.defineProperty(navigator, 'clipboard', {
+      value: undefined,
+      writable: true,
+      configurable: true,
+    })
+
+    // jsdom doesn't define execCommand — add it for this test
+    const origExecCommand = document.execCommand
+    const execCommandFn = vi.fn(() => true)
+    document.execCommand = execCommandFn
+
+    useChatStore.setState({
+      messages: [
+        { id: '1', role: 'user', content: 'Hello **world**!', timestamp: 1000 },
+      ],
+    })
+    render(<ChatArea />)
+    const copyBtn = screen.getByTitle('Copy markdown')
+
+    fireEvent.click(copyBtn)
+
+    // Fallback execCommand should have been called
+    expect(execCommandFn).toHaveBeenCalledWith('copy')
+
+    // Button should show copied state regardless of clipboard API availability
+    await waitFor(() => {
+      expect(copyBtn).toHaveClass('message__copy-btn--copied')
+    })
+
+    // Cleanup
+    document.execCommand = origExecCommand
+    Object.defineProperty(navigator, 'clipboard', {
+      value: origClipboard,
+      writable: true,
+      configurable: true,
+    })
+  })
+
   it('should collapse consecutive tool markers into a single separator', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {
