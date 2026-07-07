@@ -26,6 +26,40 @@ describe('MarkdownContent', () => {
     expect(screen.getByText('foo()')).toBeInTheDocument()
   })
 
+  it('renders fenced code block without language — does NOT get inline-code class', () => {
+    render(<MarkdownContent content={'```\nline 1\nline 2\n```'} />)
+    // Should find the code inside a <pre>
+    const pre = document.querySelector('pre')
+    expect(pre).toBeInTheDocument()
+    const code = pre.querySelector('code')
+    expect(code).toBeInTheDocument()
+    // Must NOT have inline-code class
+    expect(code.className).not.toContain('inline-code')
+    // Must NOT have node attribute on the DOM element
+    expect(code.hasAttribute('node')).toBe(false)
+  })
+
+  it('renders inline code with inline-code class and no node attribute', () => {
+    render(<MarkdownContent content="Use the `foo()` function" />)
+    const code = document.querySelector('code.inline-code')
+    expect(code).toBeInTheDocument()
+    expect(code.textContent).toBe('foo()')
+    // Must NOT have node attribute on the DOM element
+    expect(code.hasAttribute('node')).toBe(false)
+  })
+
+  it('renders fenced code block with language — keeps language class and shows label', () => {
+    render(<MarkdownContent content={'```js\nconsole.log("hi")\n```'} />)
+    const code = document.querySelector('code.language-js')
+    expect(code).toBeInTheDocument()
+    // Must NOT have inline-code class
+    expect(code.className).not.toContain('inline-code')
+    // Must NOT have node attribute
+    expect(code.hasAttribute('node')).toBe(false)
+    // Language label should be present
+    expect(screen.getByText('js')).toBeInTheDocument()
+  })
+
   it('renders links with target="_blank"', () => {
     render(<MarkdownContent content="[click me](http://example.com)" />)
     const link = screen.getByText('click me')
