@@ -18,6 +18,7 @@ It connects to a running Hakka instance via a WebSocket gateway (`/ws`) and prov
 | GFM Tables | remark-gfm | ^4.0.1 |
 | Code Highlighting | rehype-highlight | ^7.0.2 |
 | LaTeX Math | remark-math + rehype-katex | ^6.0.1 / ^6.0.3 |
+| **Diagrams** | **Mermaid** | **^11.16.0** |
 | Build Tool | Vite | ^8.1.0 |
 | Testing | Vitest + Testing Library | ^4.1.9 |
 | Linting | oxlint | ^1.69.0 |
@@ -38,6 +39,7 @@ src/
 │   ├── CwdBar.jsx                    # Editable working directory indicator (click to edit)
 │   ├── InputBar.jsx                  # Text input + Send/Cancel button
 │   ├── MarkdownContent.jsx           # ReactMarkdown wrapper with custom code & link rendering
+│   ├── MermaidBlock.jsx              # Mermaid diagram renderer (flowcharts, sequence diagrams, etc.)
 │   ├── Sidebar.jsx                   # Session list with status dots, new/delete session
 │   ├── TokensBar.jsx                 # Estimated session tokens display (bottom-right footer)
 │   └── ToolCall.jsx                  # Inline tool call display (name + snippet, color-coded)
@@ -55,6 +57,7 @@ src/
     ├── CwdBar.test.jsx               # CWD bar tests
     ├── InputBar.test.jsx             # Input tests
     ├── MarkdownContent.test.jsx      # Markdown rendering tests
+    ├── MermaidBlock.test.jsx         # Mermaid diagram renderer tests
     ├── Sidebar.test.jsx              # Sidebar tests
     ├── TokensBar.test.jsx           # TokensBar tests
     ├── genId.test.jsx                # ID generation tests
@@ -282,11 +285,23 @@ Props handlers: `onNewSession`, `onSwitchSession`, `onDeleteSession` are wired t
 
 ### MarkdownContent.jsx
 
-- Wraps `react-markdown` with GFM support, code highlighting, and **LaTeX math rendering**
+- Wraps `react-markdown` with GFM support, code highlighting, **LaTeX math rendering**, and **Mermaid diagram rendering**
 - Math support via `remark-math` (parsing `$...$` inline and `$$...$$` display math) and `rehype-katex` (rendering with KaTeX)
-- Custom `code` component: inline vs block detection, language label on code blocks
+- Mermaid support: fenced code blocks with ```` ```mermaid ```` language tag are intercepted and rendered as SVG diagrams via the `MermaidBlock` component
+- Custom `code` component: inline vs block detection, language label on code blocks, mermaid diagram blocks rendered as interactive diagrams
 - Custom `a` component: opens links in new tab
-- `isStreaming` prop disables rehype-highlight to avoid issues with incomplete code blocks (math highlighting via rehype-katex is always active)
+- `isStreaming` prop disables rehype-highlight to avoid issues with incomplete code blocks (math highlighting via rehype-katex is always active; mermaid shows a placeholder during streaming)
+
+### MermaidBlock.jsx
+
+- Renders Mermaid diagrams from markdown fenced code blocks with `mermaid` language tag
+- Uses the `mermaid` library to render diagrams as SVG
+- Detects app theme (`data-theme` on `<html>`) and applies dark/light theme to diagrams
+- **Streaming**: shows a placeholder (`🔄 Diagram rendering…`) when `isStreaming` is true, avoiding parse errors on incomplete syntax
+- **Loading**: shows "⏳ Loading diagram…" while mermaid processes the chart
+- **Error state**: displays "⚠️ Diagram Syntax Error" with the error message and the raw source code, so users can see and fix the diagram definition
+- Lifecycle: calls `mermaid.initialize()` once at module load, uses `mermaid.render()` per diagram with auto-generated unique IDs
+- Re-renders when the `chart` prop changes (e.g., during streaming completion)
 
 ### ToolCall.jsx
 

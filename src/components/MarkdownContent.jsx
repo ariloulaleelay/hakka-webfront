@@ -5,6 +5,7 @@ import remarkMath from 'remark-math'
 import rehypeKatex from 'rehype-katex'
 import rehypeHighlight from 'rehype-highlight'
 import { IconCopy, IconCheck } from '@tabler/icons-react'
+import { MermaidBlock } from './MermaidBlock'
 
 /**
  * Renders markdown content with syntax-highlighted code blocks,
@@ -85,6 +86,12 @@ export const MarkdownContent = memo(function MarkdownContent({ content, isStream
                 {children}
               </code>
             )
+          }
+
+          // Mermaid diagram blocks — render with MermaidBlock component
+          if (match && match[1] === 'mermaid') {
+            const chartText = extractCodeText(children)
+            return <MermaidBlock chart={chartText} isStreaming={isStreaming} />
           }
 
           return (

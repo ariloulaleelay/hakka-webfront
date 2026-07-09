@@ -13,7 +13,7 @@ This is a standalone React + Vite application that connects to a running Hakka i
 - **Slash Commands** — `/help`, `/tool list`, `/model switch`, and more are parsed client-side, never sent to the LLM
 - **Auto-Reconnect** — exponential backoff (1s–16s) with status indicator
 - **Editable CWD** — per-session working directory persistence
-- **Markdown Rendering** — GFM tables, syntax-highlighted code blocks, LaTeX math ($...$ and $$...$$), inline tool calls
+- **Markdown Rendering** — GFM tables, syntax-highlighted code blocks, LaTeX math ($...$ and $$...$$), **Mermaid diagrams** (``` ```mermaid ```), inline tool calls
 
 ## Quick Start
 
@@ -65,7 +65,8 @@ src/
 │   ├── ChatArea.jsx            — Message list with tool call interleaving
 │   ├── InputBar.jsx            — Text input with Send/Cancel buttons
 │   ├── Sidebar.jsx             — Session list with delete confirmation dialog
-│   ├── MarkdownContent.jsx     — Markdown renderer (react-markdown + GFM + highlighting + LaTeX math)
+│   ├── MarkdownContent.jsx     — Markdown renderer (react-markdown + GFM + highlighting + LaTeX math + Mermaid diagrams)
+│   ├── MermaidBlock.jsx        — Mermaid diagram renderer (flowcharts, sequence diagrams, etc.)
 │   ├── ToolCall.jsx            — Inline tool call display (name + snippet, color-coded)
 │   └── CwdBar.jsx              — Editable working directory indicator
 └── test/
@@ -77,6 +78,7 @@ src/
     ├── Sidebar.test.jsx        — Sidebar tests
     ├── CwdBar.test.jsx         — CWD bar tests
     ├── MarkdownContent.test.jsx— Markdown rendering tests
+    ├── MermaidBlock.test.jsx   — Mermaid diagram renderer tests
     ├── genId.test.jsx          — ID generation tests
     ├── useWebSocket.test.js    — WebSocket handler tests
     └── parseSlashCommand.test.js — Slash command parsing tests

@@ -99,6 +99,33 @@ describe('MarkdownContent', () => {
     expect(container).toBeInTheDocument()
   })
 
+  describe('mermaid diagram rendering', () => {
+    it('renders a mermaid code block as a diagram', () => {
+      const md = '```mermaid\ngraph TD;\nA-->B;\n```'
+      render(<MarkdownContent content={md} />)
+      // Should NOT render as a regular code block
+      expect(document.querySelector('.code-block')).not.toBeInTheDocument()
+      // Should render the MermaidBlock component (loading state initially)
+      expect(screen.getByText(/loading diagram/i)).toBeInTheDocument()
+    })
+
+    it('shows placeholder during streaming for mermaid blocks', () => {
+      const md = '```mermaid\ngraph TD;\nA-->B;\n```'
+      render(<MarkdownContent content={md} isStreaming={true} />)
+      // During streaming, shows "diagram rendering..." placeholder
+      expect(screen.getByText(/diagram rendering/i)).toBeInTheDocument()
+    })
+
+    it('does not interfere with non-mermaid code blocks', () => {
+      const md = '```js\nconsole.log("hello")\n```'
+      render(<MarkdownContent content={md} />)
+      // Should still render regular code blocks with copy button
+      expect(document.querySelector('.code-block')).toBeInTheDocument()
+      // The language label should be 'js'
+      expect(screen.getByText('js')).toBeInTheDocument()
+    })
+  })
+
   describe('math rendering', () => {
     it('renders inline math with $ delimiters', () => {
       render(<MarkdownContent content="The formula $E = mc^2$ is famous." />)
